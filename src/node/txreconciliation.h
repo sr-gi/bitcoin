@@ -22,6 +22,14 @@ static constexpr uint32_t TXRECONCILIATION_VERSION{1};
 constexpr double Q = 0.25;
 constexpr uint16_t Q_PRECISION{(2 << 14) - 1};
 
+/** The size of the field, used to compute sketches to reconcile transactions (see BIP-330). */
+constexpr unsigned int RECON_FIELD_SIZE = 32;
+/**
+ * Limit sketch capacity to avoid DoS. This applies only to the original sketches,
+ * and implies that extended sketches could be at most twice the size.
+ */
+constexpr uint32_t MAX_SKETCH_CAPACITY = 2 << 12;
+
 /**
  * Maximum number of wtxids stored in a peer local set, bounded to protect the memory use of
  * reconciliation sets and short ids mappings, and CPU used for sketch computation.
