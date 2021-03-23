@@ -16,6 +16,13 @@
 static constexpr uint32_t TXRECONCILIATION_VERSION{1};
 
 /**
+ * A floating point coefficient q for estimating reconciliation set difference, and
+ * the value used to convert it to integer for transmission purposes, as specified in BIP-330.
+ */
+constexpr double Q = 0.25;
+constexpr uint16_t Q_PRECISION{(2 << 14) - 1};
+
+/**
  * Maximum number of wtxids stored in a peer local set, bounded to protect the memory use of
  * reconciliation sets and short ids mappings, and CPU used for sketch computation.
  */
@@ -142,6 +149,24 @@ public:
      * Returns whether the wtxid was removed.
      */
     bool TryRemovingFromSet(NodeId peer_id, const Wtxid& wtxid);
+
+    /**
+     * Returns whether it's time to initiate reconciliation (Step 2) with a given peer, based on:
+     * - time passed since the last reconciliation;
+     * - reconciliation queue;
+     * - whether previous reconciliations for the given peer were finalized.
+     */
+    bool IsPeerNextToReconcileWith(NodeId peer_id, std::chrono::microseconds now);
+
+    /**
+     * Step 2. Unless the peer hasn't finished a previous reconciliation round, this function will
+     * return the details of our local state, which should be communicated to the peer so that they
+     * better know what we need:
+     * - size of our reconciliation set for the peer
+     * - our q-coefficient with the peer, formatted to be transmitted as integer value
+     * Assumes the peer was previously registered for reconciliations.
+     */
+    std::optional<std::pair<uint16_t, uint16_t>> InitiateReconciliationRequest(NodeId peer_id);
 
     /**
      * Attempts to forget txreconciliation-related state of the peer (if we previously stored any).
