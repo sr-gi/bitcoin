@@ -123,6 +123,15 @@ public:
     std::map<uint32_t, Wtxid> m_snapshot_short_id_mapping;
 
     /**
+     * A peer could announce a transaction to us during reconciliation and after we snapshoted
+     * the initial set. We can't remove this new transaction from the snapshot, because
+     * then we won't be able to compute a valid extension (for the sketch already transmitted).
+     * Instead, we just remember those transaction, and not announce them when we announce
+     * stuff from the snapshot.
+     */
+    std::set<Wtxid> m_announced_while_reconciling;
+
+    /**
      * In a reconciliation round initiated by us, if we asked for an extension, we want to store
      * the sketch computed/transmitted in the initial step, so that we can use it when
      * sketch extension arrives.
@@ -219,6 +228,23 @@ public:
     }
 
     /**
+     * Clears the snapshot of a peer's local set. To be called once the reconciliation flow has completed.
+     */
+    void ClearLocalSetSnapshot() {
+        m_local_set_snapshot.clear();
+        m_snapshot_short_id_mapping.clear(); // Not really needed, but better safe than sorry
+        m_announced_while_reconciling.clear();
+    }
+
+    /**
+     * Clears the peer's local set. To be called once the reconciliation flow has completed.
+     */
+    void ClearLocalSet() {
+        m_local_set.clear();
+        m_short_id_mapping.clear();
+    }
+
+    /**
      * Be ready to respond to extension request, to compute the extended sketch over
      * the same initial set (without transactions received during the reconciliation).
      * Allow to store new transactions separately in the original set.
@@ -234,6 +260,21 @@ public:
     std::vector<Wtxid> GetAllTransactions() const
     {
         return std::vector<Wtxid>(m_local_set.begin(), m_local_set.end());
+    }
+
+    /**
+     * Once we are fully done with the reconciliation we initiated, prepare the state for the
+     * following reconciliations we initiate.
+     */
+    void FinalizeInitByUs(bool clear_local_set)
+    {
+        Assume(m_we_initiate);
+        if (clear_local_set) ClearLocalSet();
+        ClearLocalSetSnapshot();
+
+        // This is currently belt-and-suspenders, as the code should work even without these calls.
+        m_capacity_snapshot = 0;
+        m_remote_sketch_snapshot.clear();
     }
 
     /**
@@ -397,7 +438,7 @@ private:
             // Announce all transactions we have.
             txs_to_announce = recon_state.GetAllTransactions();
             // Update local reconciliation state for the peer.
-            recon_state.m_local_set.clear();
+            recon_state.FinalizeInitByUs(true);
             recon_state.m_phase = Phase::NONE;
 
             result = false;
@@ -414,7 +455,7 @@ private:
                 // Identify locally/remotely missing transactions.
                 recon_state.GetRelevantIDsFromShortIDs(differences, txs_to_request, txs_to_announce);
                 // Update local reconciliation state for the peer.
-                recon_state.m_local_set.clear();
+                recon_state.FinalizeInitByUs(true);
                 recon_state.m_phase = Phase::NONE;
 
                 result = true;
@@ -564,6 +605,10 @@ public:
         } else {
             LogDebug(BCLog::TXRECONCILIATION, "Couldn't remove %s from the reconciliation set for peer=%d. Transaction not found.\n",
                 wtxid.ToString(), peer_id);
+        }
+
+        if (peer_state->m_local_set_snapshot.contains(wtxid)) {
+            peer_state->m_announced_while_reconciling.insert(wtxid);
         }
 
         return removed;
