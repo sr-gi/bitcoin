@@ -103,6 +103,13 @@ void TxReconciliationState::SnapshotLocalSet()
     m_short_id_mapping.clear();
 }
 
+void TxReconciliationState::Clear()
+{
+    if (m_we_initiate && m_phase != ReconciliationPhase::EXT_REQUESTED) ClearLocalSet();
+    ClearLocalSetSnapshot();
+    m_phase = ReconciliationPhase::NONE;
+}
+
 void TxReconciliationState::PrepareForExtensionRequest(uint16_t sketch_capacity)
 {
     Assume(!m_we_initiate);
@@ -234,8 +241,7 @@ private:
             // Announce all transactions we have.
             txs_to_announce = recon_state.GetAllTransactions();
             // Update local reconciliation state for the peer.
-            recon_state.m_local_set.clear();
-            recon_state.m_phase = ReconciliationPhase::NONE;
+            recon_state.Clear();
 
             result = false;
             LogDebug(BCLog::TXRECONCILIATION, "Reconciliation we initiated with peer=%d terminated due to empty sketch. " /* Continued */
@@ -251,8 +257,7 @@ private:
                 // Identify locally/remotely missing transactions.
                 recon_state.GetRelevantIDsFromShortIDs(differences, txs_to_request, txs_to_announce);
                 // Update local reconciliation state for the peer.
-                recon_state.m_local_set.clear();
-                recon_state.m_phase = ReconciliationPhase::NONE;
+                recon_state.Clear();
 
                 result = true;
                 LogDebug(BCLog::TXRECONCILIATION, "Reconciliation we initiated with peer=%d has succeeded at initial step, request %i txs, announce %i txs.\n",
@@ -450,6 +455,10 @@ public:
         } else {
             LogDebug(BCLog::TXRECONCILIATION, "Couldn't remove %s from the reconciliation set for peer=%d. Transaction not found.\n",
                 wtxid.ToString(), peer_id);
+        }
+
+        if (peer_state->m_local_set_snapshot.contains(wtxid)) {
+            peer_state->m_announced_while_reconciling.insert(wtxid);
         }
 
         return removed;
