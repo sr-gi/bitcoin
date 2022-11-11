@@ -108,11 +108,16 @@ public:
     Minisketch ComputeSketch(uint32_t& capacity);
 
     /**
+     * Get all the transactions we have stored for this peer.
+     */
+    std::vector<Wtxid> GetAllTransactions() const;
+
+    /**
      * When during reconciliation we find a set difference successfully (by combining sketches),
      * we want to find which transactions are missing on our and on their side.
      * For those missing on our side, we may only find short IDs.
      */
-    void GetRelevantIDsFromShortIDs(const std::vector<uint64_t>& diff, bool from_snapshot,
+    void GetRelevantIDsFromShortIDs(const std::vector<uint64_t>& diff,
                                     // returning values
                                     std::vector<uint32_t>& local_missing, std::vector<Wtxid>& remote_missing) const;
 
