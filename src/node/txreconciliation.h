@@ -25,6 +25,11 @@ constexpr uint16_t Q_PRECISION{(2 << 14) - 1};
 /** The size of the field, used to compute sketches to reconcile transactions (see BIP-330). */
 constexpr unsigned int RECON_FIELD_SIZE = 32;
 /**
+ * Allows to infer capacity of a reconciliation sketch based on it's char[] representation,
+ * which is necessary to deserealize a received sketch.
+ */
+constexpr unsigned int BYTES_PER_SKETCH_CAPACITY = RECON_FIELD_SIZE / 8;
+/**
  * Limit sketch capacity to avoid DoS. This applies only to the original sketches,
  * and implies that extended sketches could be at most twice the size.
  */
@@ -191,6 +196,16 @@ public:
      * this peer has ticked (send_trickle is true) to prevent announcing things too early.
      */
     bool ShouldRespondToReconciliationRequest(NodeId peer_id, std::vector<uint8_t>& skdata, bool send_trickle);
+
+    /**
+     * Step 3. Process a response to our reconciliation request.
+     * Returns false if the peer seems to violate the protocol.
+     * Populates the vectors so that we know which transactions should be requested and announced,
+     * and whether reconciliation succeeded.
+     */
+    bool HandleSketch(NodeId peer_id, const std::vector<uint8_t>& skdata,
+                      // returning values
+                      std::vector<uint32_t>& txs_to_request, std::vector<Wtxid>& txs_to_announce, bool& result);
 
     /**
      * Attempts to forget txreconciliation-related state of the peer (if we previously stored any).
