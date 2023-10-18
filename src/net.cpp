@@ -570,6 +570,7 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
 
         // Check any other resolved address (if any) if we fail to connect
         if (!connected) {
+            LogPrintf("SDS: Couldn't connect to %d, trying another address\n", addrConnect.ToStringAddrPort());
             continue;
         }
 
@@ -598,9 +599,11 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
         // We're making a new connection, harvest entropy from the time (and our peer count)
         RandAddEvent((uint32_t)id);
 
+        LogPrintf("SDS: Successfully connected to %d\n", addrConnect.ToStringAddrPort());
         return pnode;
     }
 
+    LogPrintf("SDS: Exhausted all resolved addresses for %s\n", pszDest);
     return nullptr;
 }
 
