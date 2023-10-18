@@ -463,6 +463,7 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
     // Resolve
     const uint16_t default_port{pszDest != nullptr ? GetDefaultPort(pszDest) :
                                                      m_params.GetDefaultPort()};
+    std::vector<CAddress> resolvedAddresses{};
     if (pszDest) {
         std::vector<CService> resolved{Lookup(pszDest, default_port, fNameLookup && !HaveNameProxy(), 256)};
         if (!resolved.empty()) {
@@ -483,8 +484,12 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
                     LogPrintf("Not opening a connection to %s, already connected to %s\n", pszDest, addrConnect.ToStringAddrPort());
                     return nullptr;
                 }
+                // Add the address to the resolved addresses vector so we can try to connect to it later on
+                resolvedAddresses.push_back(addrConnect);
             }
         }
+    } else {
+        resolvedAddresses.push_back(addrConnect);
     }
 
     // Connect
@@ -495,102 +500,108 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
     assert(!addr_bind.IsValid());
     std::unique_ptr<i2p::sam::Session> i2p_transient_session;
 
-    if (addrConnect.IsValid()) {
-        const bool use_proxy{GetProxy(addrConnect.GetNetwork(), proxy)};
-        bool proxyConnectionFailed = false;
+    for (auto& addrConnect: resolvedAddresses) {
+        if (addrConnect.IsValid()) {
+            const bool use_proxy{GetProxy(addrConnect.GetNetwork(), proxy)};
+            bool proxyConnectionFailed = false;
 
-        if (addrConnect.IsI2P() && use_proxy) {
-            i2p::Connection conn;
+            if (addrConnect.IsI2P() && use_proxy) {
+                i2p::Connection conn;
 
-            if (m_i2p_sam_session) {
-                connected = m_i2p_sam_session->Connect(addrConnect, conn, proxyConnectionFailed);
+                if (m_i2p_sam_session) {
+                    connected = m_i2p_sam_session->Connect(addrConnect, conn, proxyConnectionFailed);
+                } else {
+                    {
+                        LOCK(m_unused_i2p_sessions_mutex);
+                        if (m_unused_i2p_sessions.empty()) {
+                            i2p_transient_session =
+                                std::make_unique<i2p::sam::Session>(proxy.proxy, &interruptNet);
+                        } else {
+                            i2p_transient_session.swap(m_unused_i2p_sessions.front());
+                            m_unused_i2p_sessions.pop();
+                        }
+                    }
+                    connected = i2p_transient_session->Connect(addrConnect, conn, proxyConnectionFailed);
+                    if (!connected) {
+                        LOCK(m_unused_i2p_sessions_mutex);
+                        if (m_unused_i2p_sessions.size() < MAX_UNUSED_I2P_SESSIONS_SIZE) {
+                            m_unused_i2p_sessions.emplace(i2p_transient_session.release());
+                        }
+                    }
+                }
+
+                if (connected) {
+                    sock = std::move(conn.sock);
+                    addr_bind = CAddress{conn.me, NODE_NONE};
+                }
+            } else if (use_proxy) {
+                sock = CreateSock(proxy.proxy);
+                if (!sock) {
+                    return nullptr;
+                }
+                connected = ConnectThroughProxy(proxy, addrConnect.ToStringAddr(), addrConnect.GetPort(),
+                                                *sock, nConnectTimeout, proxyConnectionFailed);
             } else {
-                {
-                    LOCK(m_unused_i2p_sessions_mutex);
-                    if (m_unused_i2p_sessions.empty()) {
-                        i2p_transient_session =
-                            std::make_unique<i2p::sam::Session>(proxy.proxy, &interruptNet);
-                    } else {
-                        i2p_transient_session.swap(m_unused_i2p_sessions.front());
-                        m_unused_i2p_sessions.pop();
-                    }
+                // no proxy needed (none set for target network)
+                sock = CreateSock(addrConnect);
+                if (!sock) {
+                    continue;
                 }
-                connected = i2p_transient_session->Connect(addrConnect, conn, proxyConnectionFailed);
-                if (!connected) {
-                    LOCK(m_unused_i2p_sessions_mutex);
-                    if (m_unused_i2p_sessions.size() < MAX_UNUSED_I2P_SESSIONS_SIZE) {
-                        m_unused_i2p_sessions.emplace(i2p_transient_session.release());
-                    }
-                }
+                connected = ConnectSocketDirectly(addrConnect, *sock, nConnectTimeout,
+                                                conn_type == ConnectionType::MANUAL);
             }
-
-            if (connected) {
-                sock = std::move(conn.sock);
-                addr_bind = CAddress{conn.me, NODE_NONE};
+            if (!proxyConnectionFailed) {
+                // If a connection to the node was attempted, and failure (if any) is not caused by a problem connecting to
+                // the proxy, mark this as an attempt.
+                addrman.Attempt(addrConnect, fCountFailure);
             }
-        } else if (use_proxy) {
+        } else if (pszDest && GetNameProxy(proxy)) {
             sock = CreateSock(proxy.proxy);
             if (!sock) {
                 return nullptr;
             }
-            connected = ConnectThroughProxy(proxy, addrConnect.ToStringAddr(), addrConnect.GetPort(),
-                                            *sock, nConnectTimeout, proxyConnectionFailed);
-        } else {
-            // no proxy needed (none set for target network)
-            sock = CreateSock(addrConnect);
-            if (!sock) {
-                return nullptr;
-            }
-            connected = ConnectSocketDirectly(addrConnect, *sock, nConnectTimeout,
-                                              conn_type == ConnectionType::MANUAL);
+            std::string host;
+            uint16_t port{default_port};
+            SplitHostPort(std::string(pszDest), port, host);
+            bool proxyConnectionFailed;
+            connected = ConnectThroughProxy(proxy, host, port, *sock, nConnectTimeout,
+                                            proxyConnectionFailed);
         }
-        if (!proxyConnectionFailed) {
-            // If a connection to the node was attempted, and failure (if any) is not caused by a problem connecting to
-            // the proxy, mark this as an attempt.
-            addrman.Attempt(addrConnect, fCountFailure);
+
+        // Check any other resolved address (if any) if we fail to connect
+        if (!connected) {
+            continue;
         }
-    } else if (pszDest && GetNameProxy(proxy)) {
-        sock = CreateSock(proxy.proxy);
-        if (!sock) {
-            return nullptr;
+
+        // Add node
+        NodeId id = GetNewNodeId();
+        uint64_t nonce = GetDeterministicRandomizer(RANDOMIZER_ID_LOCALHOSTNONCE).Write(id).Finalize();
+        if (!addr_bind.IsValid()) {
+            addr_bind = GetBindAddress(*sock);
         }
-        std::string host;
-        uint16_t port{default_port};
-        SplitHostPort(std::string(pszDest), port, host);
-        bool proxyConnectionFailed;
-        connected = ConnectThroughProxy(proxy, host, port, *sock, nConnectTimeout,
-                                        proxyConnectionFailed);
-    }
-    if (!connected) {
-        return nullptr;
+        CNode* pnode = new CNode(id,
+                                std::move(sock),
+                                addrConnect,
+                                CalculateKeyedNetGroup(addrConnect),
+                                nonce,
+                                addr_bind,
+                                pszDest ? pszDest : "",
+                                conn_type,
+                                /*inbound_onion=*/false,
+                                CNodeOptions{
+                                    .i2p_sam_session = std::move(i2p_transient_session),
+                                    .recv_flood_size = nReceiveFloodSize,
+                                    .use_v2transport = use_v2transport,
+                                });
+        pnode->AddRef();
+
+        // We're making a new connection, harvest entropy from the time (and our peer count)
+        RandAddEvent((uint32_t)id);
+
+        return pnode;
     }
 
-    // Add node
-    NodeId id = GetNewNodeId();
-    uint64_t nonce = GetDeterministicRandomizer(RANDOMIZER_ID_LOCALHOSTNONCE).Write(id).Finalize();
-    if (!addr_bind.IsValid()) {
-        addr_bind = GetBindAddress(*sock);
-    }
-    CNode* pnode = new CNode(id,
-                             std::move(sock),
-                             addrConnect,
-                             CalculateKeyedNetGroup(addrConnect),
-                             nonce,
-                             addr_bind,
-                             pszDest ? pszDest : "",
-                             conn_type,
-                             /*inbound_onion=*/false,
-                             CNodeOptions{
-                                 .i2p_sam_session = std::move(i2p_transient_session),
-                                 .recv_flood_size = nReceiveFloodSize,
-                                 .use_v2transport = use_v2transport,
-                             });
-    pnode->AddRef();
-
-    // We're making a new connection, harvest entropy from the time (and our peer count)
-    RandAddEvent((uint32_t)id);
-
-    return pnode;
+    return nullptr;
 }
 
 void CNode::CloseSocketDisconnect()
