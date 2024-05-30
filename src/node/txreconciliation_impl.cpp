@@ -25,6 +25,13 @@ uint256 ComputeSalt(uint64_t salt1, uint64_t salt2)
     return (HashWriter(RECON_SALT_HASHER) << std::min(salt1, salt2) << std::max(salt1, salt2)).GetSHA256();
 }
 
+uint32_t TxReconciliationState::ComputeShortID(const Wtxid& wtxid) const
+{
+    const uint64_t s = SipHashUint256(m_k0, m_k1, wtxid.ToUint256());
+    const uint32_t short_txid = 1 + (s & 0xFFFFFFFF);
+    return short_txid;
+}
+
 /** Actual implementation for TxReconciliationTracker's data structure. */
 class TxReconciliationTrackerImpl {
 private:
