@@ -14,6 +14,15 @@
 #include <variant>
 
 namespace node {
+uint32_t TxReconciliationState::ComputeShortID(const Wtxid& wtxid) const
+{
+    // TODO: We may want to compute the hasher just once and store it, instead of
+    // keeping m_k0 and m_k1 around
+    PresaltedSipHasher hasher(m_k0, m_k1);
+    const uint32_t short_txid = 1 + (hasher(wtxid.ToUint256()) & 0xFFFFFFFF);
+    return short_txid;
+}
+
 /** Actual implementation for TxReconciliationTracker's data structure. */
 class TxReconciliationTrackerImpl {
 private:
