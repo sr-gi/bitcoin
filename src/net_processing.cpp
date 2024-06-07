@@ -546,6 +546,7 @@ public:
     void SendPings() override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
     void InitiateTxBroadcastToAll(const Txid& txid, const Wtxid& wtxid) override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
     void InitiateTxBroadcastPrivate(const CTransactionRef& tx) override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
+    std::pair<size_t, size_t> GetFanoutPeersCount() override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
     void SetBestBlock(int height, std::chrono::seconds time) override
     {
         m_best_height = height;
@@ -2213,6 +2214,26 @@ void PeerManagerImpl::SendPings()
 {
     LOCK(m_peer_mutex);
     for(auto& it : m_peer_map) it.second->m_ping_queued = true;
+}
+
+std::pair<size_t, size_t> PeerManagerImpl::GetFanoutPeersCount()
+{
+
+    size_t inbounds_fanout_tx_relay = 0, outbounds_fanout_tx_relay = 0;
+
+    if (m_txreconciliation) {
+        LOCK(m_peer_mutex);
+        for(const auto& [peer_id, peer] : m_peer_map) {
+            if (const auto tx_relay = peer->GetTxRelay()) {
+                const bool peer_relays_txs = WITH_LOCK(tx_relay->m_bloom_filter_mutex, return tx_relay->m_relay_txs);
+                if (peer_relays_txs && !m_txreconciliation->IsPeerRegistered(peer_id)) {
+                    peer->m_is_inbound ? ++inbounds_fanout_tx_relay : ++outbounds_fanout_tx_relay;
+                }
+            }
+        }
+    }
+
+    return std::pair(inbounds_fanout_tx_relay, outbounds_fanout_tx_relay);
 }
 
 void PeerManagerImpl::InitiateTxBroadcastToAll(const Txid& txid, const Wtxid& wtxid)
