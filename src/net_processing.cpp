@@ -6196,6 +6196,7 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                 LOCK(tx_relay->m_tx_inventory_mutex);
                 // Check whether periodic sends should happen
                 bool fSendTrickle = pto->HasPermission(NetPermissionFlags::NoBan);
+                const bool reconciles_txs = m_txreconciliation && m_txreconciliation->IsPeerRegistered(pto->GetId());
                 if (tx_relay->m_next_inv_send_time < current_time) {
                     fSendTrickle = true;
                     if (pto->IsInboundConn()) {
@@ -6289,7 +6290,10 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                         if (tx_relay->m_bloom_filter && !tx_relay->m_bloom_filter->IsRelevantAndUpdate(*txinfo.tx)) continue;
                         // Send
                          vInv.push_back(inv);
-                         // TODO: Build the sketch here
+                         if (reconciles_txs) {
+                            // Compute periodic sketch
+                            m_txreconciliation->ComputeSketch(peer->m_id);
+                         }
 
                         nRelayedTransactions++;
                         if (vInv.size() == MAX_INV_SZ) {
