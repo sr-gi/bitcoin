@@ -12,6 +12,8 @@
 #include <tuple>
 #include <optional>
 
+#include <node/minisketchwrapper.h>
+
 /** Supported transaction reconciliation protocol version */
 static constexpr uint32_t TXRECONCILIATION_VERSION{1};
 
@@ -145,6 +147,14 @@ public:
      * (from less to more)
     */
     std::vector<NodeId> SortPeersByFewestParents(std::vector<Wtxid> parents);
+
+    /**
+     * Reconciliation involves computing a space-efficient representation of transaction identifiers
+     * (a sketch). A sketch has a capacity meaning it allows reconciling at most a certain number
+     * of elements (see BIP-330). Sketches will be created on the fly, and shrinked to capacity when
+     * shared, that way the load of sketch computation is not tied to the reconciliation workflow.
+     */
+    Minisketch ComputeSketch(NodeId peer_id);
 };
 
 #endif // BITCOIN_NODE_TXRECONCILIATION_H

@@ -31,6 +31,11 @@ constexpr size_t OUTBOUND_FANOUT_DESTINATIONS = 1;
  */
 constexpr size_t FANOUT_TARGETS_PER_TX_CACHE_SIZE = 3000;
 /**
+ * Limit sketch capacity to avoid DoS. This applies only to the original sketches,
+ * and implies that extended sketches could be at most twice the size.
+ */
+constexpr uint32_t MAX_SKETCH_CAPACITY = 2 << 12;
+/**
  * Salt (specified by BIP-330) constructed from contributions from both peers. It is used
  * to compute transaction short IDs, which are then used to construct a sketch representing a set
  * of transactions we want to announce to the peer.
@@ -61,6 +66,11 @@ public:
     uint64_t m_k0, m_k1;
 
     /**
+     * Set reconciliation sketch. Should be periodically updated on trickle intervals (and cleared when exchanged).
+     */
+    Minisketch m_sketch;
+
+    /**
      * Store all wtxids which we would announce to the peer (policy checks passed, etc.)
      * in this set instead of announcing them right away. When reconciliation time comes, we will
      * compute a compressed representation of this set ("sketch") and use it to efficiently
@@ -78,7 +88,15 @@ public:
      */
     std::map<uint32_t, Wtxid> m_short_id_mapping;
 
-    TxReconciliationState(bool we_initiate, uint64_t k0, uint64_t k1) : m_we_initiate(we_initiate), m_k0(k0), m_k1(k1) {}
+    /**
+     * Set of short ids pending to be added to the sketch. The set is populated by AddToSet.
+     * Items are added to the sketch at trickling intervals and the collection is then cleared.
+     * The purpose if this delayed addition is to prevent peers probing what data is in our reconciliation
+     * set between intervals.
+     */
+    std::set<uint32_t> m_to_be_sketched;
+
+    TxReconciliationState(bool we_initiate, uint64_t k0, uint64_t k1) : m_we_initiate(we_initiate), m_k0(k0), m_k1(k1), m_sketch(node::MakeMinisketch32(MAX_SKETCH_CAPACITY)) {}
 
     /**
      * Reconciliation sketches are computed over short transaction IDs.
@@ -258,6 +276,7 @@ public:
         // simply ignore it.
         if (peer_state->m_local_set.insert(wtxid).second) {
             peer_state->m_short_id_mapping.emplace(short_id, wtxid);
+            peer_state->m_to_be_sketched.insert(short_id);
             LogPrintLevel(BCLog::TXRECONCILIATION, BCLog::Level::Debug, "Added %s to the reconciliation set for peer=%d. " /* Continued */
                                                                         "Now the set contains %i transactions.\n",
                           wtxid.ToString(), peer_id, peer_state->m_local_set.size());
@@ -274,7 +293,9 @@ public:
 
         auto removed = peer_state->m_local_set.erase(wtxid) > 0;
         if (removed) {
-            peer_state->m_short_id_mapping.erase(peer_state->ComputeShortID(wtxid));
+            auto sid = peer_state->ComputeShortID(wtxid);
+            peer_state->m_short_id_mapping.erase(sid);
+            peer_state->m_to_be_sketched.erase(sid);
             LogPrintLevel(BCLog::TXRECONCILIATION, BCLog::Level::Debug, "Removed %s from the reconciliation set for peer=%d. " /* Continued */
                                                                         "Now the set contains %i transactions.\n",
                           wtxid.ToString(), peer_id, peer_state->m_local_set.size());
@@ -438,6 +459,20 @@ public:
 
         return sorted_peers;
     }
+
+    Minisketch ComputeSketch(NodeId peer_id) EXCLUSIVE_LOCKS_REQUIRED(!m_txreconciliation_mutex) {
+        AssertLockNotHeld(m_txreconciliation_mutex);
+        LOCK(m_txreconciliation_mutex);
+        auto peer_state = GetRegisteredPeerState(peer_id);
+        if (!peer_state) return node::MakeMinisketch32(0);
+
+        for (const auto& sid: peer_state->m_to_be_sketched) {
+            peer_state->m_sketch.Add(sid);
+        }
+        peer_state->m_to_be_sketched.clear();
+
+        return peer_state->m_sketch;
+    }
 };
 
 AddToSetResult::AddToSetResult(bool succeeded, std::optional<Wtxid> conflict) {
@@ -513,4 +548,9 @@ bool TxReconciliationTracker::ShouldFanoutTo(const Wtxid& wtxid, NodeId peer_id,
 std::vector<NodeId> TxReconciliationTracker::SortPeersByFewestParents(std::vector<Wtxid> parents)
 {
     return m_impl->SortPeersByFewestParents(parents);
+}
+
+Minisketch TxReconciliationTracker::ComputeSketch(NodeId peer_id)
+{
+    return m_impl->ComputeSketch(peer_id);
 }
