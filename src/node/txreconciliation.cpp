@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <variant>
 
+#include <boost/multi_index_container.hpp>
+#include <boost/multi_index/hashed_index.hpp>
 
 namespace {
 
@@ -47,6 +49,61 @@ uint256 ComputeSalt(uint64_t salt1, uint64_t salt2)
 }
 
 /**
+ * Transaction related data to be kept in the txreconciliation-related per-peer state.
+ */
+class TxReconciliationEntry
+{
+    private:
+        const Wtxid wtxid;
+        const uint32_t short_id;
+        mutable bool sketched;
+
+    public:
+        TxReconciliationEntry(const Wtxid wtxid, const uint32_t short_id): wtxid{wtxid}, short_id{short_id}, sketched{false} {}
+        const Wtxid& GetWtxid() const { return wtxid; }
+        const uint32_t& GetShortID() const { return short_id; }
+        bool IsSketched() const { return sketched; }
+        void Sketched() const { sketched=true; }
+};
+
+struct reconciliation_entry_wtxid
+{
+    typedef Wtxid result_type;
+    result_type operator() (const TxReconciliationEntry &entry) const {
+        return entry.GetWtxid();
+    }
+};
+
+struct reconciliation_entry_short_id
+{
+    typedef uint32_t result_type;
+    result_type operator() (const TxReconciliationEntry &entry) const {
+        return entry.GetShortID();
+    }
+};
+
+// Multi_index tag names
+struct index_by_wtxid {};
+struct index_by_short_id {};
+
+typedef boost::multi_index_container<
+    TxReconciliationEntry,
+    boost::multi_index::indexed_by<
+            // sorted by wtxid
+            boost::multi_index::hashed_unique<
+            boost::multi_index::tag<index_by_wtxid>,
+            reconciliation_entry_wtxid,
+            SaltedTxidHasher
+        >,
+            // sorted by short_id
+        boost::multi_index::hashed_unique<
+            boost::multi_index::tag<index_by_short_id>,
+            reconciliation_entry_short_id
+        >
+    >
+> indexed_reconciliation_set;
+
+/**
  * Keeps track of txreconciliation-related per-peer state.
  */
 class TxReconciliationState
@@ -71,30 +128,12 @@ public:
     Minisketch m_sketch;
 
     /**
-     * Store all wtxids which we would announce to the peer (policy checks passed, etc.)
-     * in this set instead of announcing them right away. When reconciliation time comes, we will
-     * compute a compressed representation of this set ("sketch") and use it to efficiently
-     * reconcile this set with a set on the peer's side.
-     */
-    std::unordered_set<Wtxid, SaltedTxidHasher> m_local_set;
-
-    /**
-     * Reconciliation sketches are computed over short transaction IDs.
-     * This is a cache of these IDs enabling faster lookups of full wtxids,
-     * useful when peer will ask for missing transactions by short IDs
-     * at the end of a reconciliation round.
-     * We also use this to keep track of short ID collisions. In case of a
-     * collision, both transactions should be fanout.
-     */
-    std::map<uint32_t, Wtxid> m_short_id_mapping;
-
-    /**
-     * Set of short ids pending to be added to the sketch. The set is populated by AddToSet.
-     * Items are added to the sketch at trickling intervals and the collection is then cleared.
-     * The purpose if this delayed addition is to prevent peers probing what data is in our reconciliation
-     * set between intervals.
-     */
-    std::set<uint32_t> m_to_be_sketched;
+    * Store all transaction data which we would announce to the peer (policy checks passed, etc.) in multi index instead
+    * of announcing them right away. The data consist of the wtxid, the short_id, and wether the data is already sketched.
+    * Periodically, every trickle interval, we will compute a compressed representation of this set ("sketch") and use
+    * it to efficiently reconcile transaction with the set on the peer's side.
+    */
+    indexed_reconciliation_set m_indexed_local_set;
 
     TxReconciliationState(bool we_initiate, uint64_t k0, uint64_t k1) : m_we_initiate(we_initiate), m_k0(k0), m_k1(k1), m_sketch(node::MakeMinisketch32(MAX_SKETCH_CAPACITY)) {}
 
@@ -217,10 +256,10 @@ public:
         AssertLockHeld(m_txreconciliation_mutex);
 
         short_id = peer_state->ComputeShortID(wtxid);
-        const auto iter = peer_state->m_short_id_mapping.find(short_id);
+        const auto iter = peer_state->m_indexed_local_set.get<index_by_short_id>().find(short_id);
 
-        if (iter != peer_state->m_short_id_mapping.end()) {
-            collision = iter->second;
+        if (iter != peer_state->m_indexed_local_set.get<index_by_short_id>().end()) {
+            collision = iter->GetWtxid();
             return true;
         }
 
@@ -244,7 +283,7 @@ public:
         if (!peer_state) return AddToSetResult::Failed();
 
         // Bypass if the wtxid is already in the set
-        if (peer_state->m_local_set.find(wtxid) != peer_state->m_local_set.end()) {
+        if (peer_state->m_indexed_local_set.get<index_by_wtxid>().find(wtxid) != peer_state->m_indexed_local_set.get<index_by_wtxid>().end()) {
             LogPrintLevel(BCLog::TXRECONCILIATION, BCLog::Level::Debug, "%s already in reconciliation set for peer=%d. Bypassing.\n",
                           wtxid.ToString(), peer_id);
             return AddToSetResult::Succeeded();
@@ -269,17 +308,15 @@ public:
         // However, exploiting (2) should not prevent us from relaying certain transactions.
         //
         // Transactions which don't make it to the set due to the limit are announced via fan-out.
-        if (peer_state->m_local_set.size() >= MAX_RECONSET_SIZE) return AddToSetResult::Failed();
+        if (peer_state->m_indexed_local_set.size() >= MAX_RECONSET_SIZE) return AddToSetResult::Failed();
 
         // The caller currently keeps track of the per-peer transaction announcements, so it
         // should not attempt to add same tx to the set twice. However, if that happens, we will
         // simply ignore it.
-        if (peer_state->m_local_set.insert(wtxid).second) {
-            peer_state->m_short_id_mapping.emplace(short_id, wtxid);
-            peer_state->m_to_be_sketched.insert(short_id);
+        if (peer_state->m_indexed_local_set.insert(TxReconciliationEntry(wtxid, short_id)).second) {
             LogPrintLevel(BCLog::TXRECONCILIATION, BCLog::Level::Debug, "Added %s to the reconciliation set for peer=%d. " /* Continued */
                                                                         "Now the set contains %i transactions.\n",
-                          wtxid.ToString(), peer_id, peer_state->m_local_set.size());
+                          wtxid.ToString(), peer_id, peer_state->m_indexed_local_set.size());
         }
         return AddToSetResult::Succeeded();
     }
@@ -291,14 +328,11 @@ public:
         auto peer_state = GetRegisteredPeerState(peer_id);
         if (!peer_state) return false;
 
-        auto removed = peer_state->m_local_set.erase(wtxid) > 0;
+        auto removed = peer_state->m_indexed_local_set.erase(wtxid) > 0;
         if (removed) {
-            auto sid = peer_state->ComputeShortID(wtxid);
-            peer_state->m_short_id_mapping.erase(sid);
-            peer_state->m_to_be_sketched.erase(sid);
             LogPrintLevel(BCLog::TXRECONCILIATION, BCLog::Level::Debug, "Removed %s from the reconciliation set for peer=%d. " /* Continued */
                                                                         "Now the set contains %i transactions.\n",
-                          wtxid.ToString(), peer_id, peer_state->m_local_set.size());
+                          wtxid.ToString(), peer_id, peer_state->m_indexed_local_set.size());
         } else {
             LogPrintLevel(BCLog::TXRECONCILIATION, BCLog::Level::Debug, "Couldn't remove %s from the reconciliation set for peer=%d. " /* Continued */
                                                                         "Transaction not found\n",
@@ -444,7 +478,7 @@ public:
         for (auto &[parent_count, peer_id]: parents_by_peer) {
             const auto state = std::get<TxReconciliationState>(m_states.find(peer_id)->second);
             for (const auto& wtxid: parents) {
-                if (auto found = state.m_local_set.find(wtxid); found != state.m_local_set.end()) {
+                if (auto found = state.m_indexed_local_set.get<index_by_wtxid>().find(wtxid); found != state.m_indexed_local_set.get<index_by_wtxid>().end()) {
                     ++parent_count;
                 }
             }
@@ -466,10 +500,12 @@ public:
         auto peer_state = GetRegisteredPeerState(peer_id);
         if (!peer_state) return node::MakeMinisketch32(0);
 
-        for (const auto& sid: peer_state->m_to_be_sketched) {
-            peer_state->m_sketch.Add(sid);
+        for (auto &item: peer_state->m_indexed_local_set.get<index_by_wtxid>()) {
+            if (!item.IsSketched()) {
+                peer_state->m_sketch.Add(item.GetShortID());
+                item.Sketched();
+            }
         }
-        peer_state->m_to_be_sketched.clear();
 
         return peer_state->m_sketch;
     }
