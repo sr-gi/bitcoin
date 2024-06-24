@@ -276,4 +276,44 @@ BOOST_AUTO_TEST_CASE(ShouldFanoutToTest)
     }
 }
 
+BOOST_AUTO_TEST_CASE(ComputeSketch) {
+    CSipHasher hasher(0x0706050403020100ULL, 0x0F0E0D0C0B0A0908ULL);
+    TxReconciliationTracker tracker(TXRECONCILIATION_VERSION, hasher);
+    NodeId peer_id0 = 0;
+    FastRandomContext frc{/*fDeterministic=*/true};
+    std::vector<uint64_t> empty_sketch(0);
+
+    // Compute sketch returns an empty sketch for non registered peers
+    auto s = tracker.ComputeSketch(peer_id0);
+    BOOST_REQUIRE(s.Decode(empty_sketch));
+    BOOST_REQUIRE(empty_sketch.empty());
+
+    // Same for only pre-registered
+    BOOST_REQUIRE(!tracker.IsPeerRegistered(peer_id0));
+    tracker.PreRegisterPeer(peer_id0);
+    s = tracker.ComputeSketch(peer_id0);
+    BOOST_REQUIRE(s.Decode(empty_sketch));
+    BOOST_REQUIRE(empty_sketch.empty());
+
+    // Register the peer
+    BOOST_REQUIRE_EQUAL(tracker.RegisterPeer(peer_id0, /*is_peer_inbound=*/false, 1, 1), ReconciliationRegisterResult::SUCCESS);
+
+    // Add some data to the reconciliation set, but do not sketch it
+    Wtxid wtxid;
+    Wtxid collision;
+    uint32_t short_id;
+    for (int j = 0; j < 10; ++j) {
+        do {
+            wtxid = Wtxid::FromUint256(frc.rand256());
+        } while (tracker.HasCollision(peer_id0, wtxid, collision, short_id));
+        BOOST_REQUIRE(tracker.AddToSet(peer_id0, wtxid).m_succeeded);
+    }
+
+    // Computing a sketch now should 10 elements
+    std::vector<uint64_t> decoded_sketch(10);
+    s = tracker.ComputeSketch(peer_id0);
+    BOOST_REQUIRE(s.Decode(decoded_sketch));
+    BOOST_REQUIRE_EQUAL(decoded_sketch.size(), 10);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
