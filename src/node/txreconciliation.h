@@ -147,10 +147,17 @@ public:
     bool IsPeerRegistered(NodeId peer_id) const;
 
     /**
+     * Returns two ordered collections of peers for fanout to, one for inbounds and one for outbounds.
+     * The collections are composed by all registered peers that support transaction reconciliation of a given type,
+     * sorted deterministically at random based on both the wtxid of the transaction we are making the decision on, and the peer id.
+     * The corrections are sized based on [inbounds_fanout_tx_relay] and [outbounds_fanout_tx_relay]
+    */
+    std::tuple<std::vector<NodeId>, std::vector<NodeId>> GetFanoutTargets(const Wtxid& wtxid, size_t inbounds_fanout_tx_relay, size_t outbounds_fanout_tx_relay);
+
+    /**
      * Returns whether the peer is chosen as a low-fanout destination for a given tx.
-     */
-    bool ShouldFanoutTo(const Wtxid& wtxid, NodeId peer_id,
-                        size_t inbounds_fanout_tx_relay, size_t outbounds_fanout_tx_relay);
+    */
+    bool ShouldFanoutTo(NodeId peer_id, std::vector<NodeId> &in_fanout_targets, std::vector<NodeId> &out_fanout_targets);
 
     /**
      * Returns a collections of node ids sorted by how many parents the peer has in its reconciliation set
