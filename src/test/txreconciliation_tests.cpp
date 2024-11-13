@@ -153,4 +153,23 @@ BOOST_AUTO_TEST_CASE(TryRemovingFromSetTest)
     BOOST_REQUIRE(!tracker.TryRemovingFromSet(peer_id0, wtxid));
 }
 
+BOOST_AUTO_TEST_CASE(SortPeersByFewestParentsTest)
+{
+    TxReconciliationTracker tracker(TXRECONCILIATION_VERSION);
+    FastRandomContext frc{/*fDeterministic=*/true};
+
+    std::vector<NodeId> peers = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    std::vector<Wtxid> parents;
+
+    for (auto &peer_id: peers) {
+        tracker.PreRegisterPeer(peer_id);
+        BOOST_REQUIRE_EQUAL(tracker.RegisterPeer(peer_id, true, 1, 1), ReconciliationRegisterResult::SUCCESS);
+        parents.push_back(Wtxid::FromUint256(frc.rand256()));
+    }
+
+    // If peers tie, they are returned in reverse order of insertion
+    std::vector<NodeId> expected_order = {9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
+    BOOST_REQUIRE(tracker.SortPeersByFewestParents(parents) == expected_order);
+ }
+
 BOOST_AUTO_TEST_SUITE_END()
