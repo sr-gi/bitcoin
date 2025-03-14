@@ -9,6 +9,7 @@
 #include <util/check.h>
 #include <util/hasher.h>
 
+#include <cmath>
 #include <unordered_map>
 #include <variant>
 
@@ -85,6 +86,11 @@ private:
      */
     size_t m_inbounds_count GUARDED_BY(m_txreconciliation_mutex){0};
 
+    /**
+     * Collection of inbound peers selected for fanout. Should get periodically rotated using RotateInboundFanoutTargets
+     */
+    std::unordered_set<NodeId> m_inbound_fanout_targets;
+
     TxReconciliationState* GetRegisteredPeerState(NodeId peer_id) EXCLUSIVE_LOCKS_REQUIRED(m_txreconciliation_mutex)
     {
         AssertLockHeld(m_txreconciliation_mutex);
@@ -147,6 +153,13 @@ public:
 
         if (is_peer_inbound && m_inbounds_count < std::numeric_limits<size_t>::max()) {
             ++m_inbounds_count;
+
+            if (m_inbound_fanout_targets.size() <  std::floor(m_inbounds_count * INBOUND_FANOUT_DESTINATIONS_FRACTION)) {
+                // Scale up fanout targets as we get more connections. Targets will be rotated periodically via RotateInboundFanoutTargets
+                if (FastRandomContext().randrange(10) <= INBOUND_FANOUT_DESTINATIONS_FRACTION * 10) {
+                    m_inbound_fanout_targets.insert(peer_id);
+                }
+            }
         }
         return ReconciliationRegisterResult::SUCCESS;
     }
@@ -176,6 +189,16 @@ public:
                           wtxid.ToString(), peer_id, peer_state->m_local_set.size());
         }
         return AddToSetResult::Succeeded();
+    }
+
+    bool IsTransactionInSet(NodeId peer_id, const Wtxid& wtxid) EXCLUSIVE_LOCKS_REQUIRED(!m_txreconciliation_mutex)
+    {
+        AssertLockNotHeld(m_txreconciliation_mutex);
+        LOCK(m_txreconciliation_mutex);
+        auto peer_state = GetRegisteredPeerState(peer_id);
+        if (!peer_state) return false;
+
+        return peer_state->m_local_set.contains(wtxid);
     }
 
     bool TryRemovingFromSet(NodeId peer_id, const Wtxid& wtxid) EXCLUSIVE_LOCKS_REQUIRED(!m_txreconciliation_mutex)
@@ -210,6 +233,7 @@ public:
         if (registered && !registered->m_we_initiate) {
             Assert(m_inbounds_count > 0);
             --m_inbounds_count;
+            m_inbound_fanout_targets.erase(peer_id);
         }
 
         if (m_states.erase(peer_id)) {
@@ -227,6 +251,41 @@ public:
         auto recon_state = m_states.find(peer_id);
         return (recon_state != m_states.end() &&
                 std::holds_alternative<TxReconciliationState>(recon_state->second));
+    }
+
+    bool IsInboundFanoutTarget(NodeId peer_id) const EXCLUSIVE_LOCKS_REQUIRED(!m_txreconciliation_mutex) {
+        AssertLockNotHeld(m_txreconciliation_mutex);
+        LOCK(m_txreconciliation_mutex);
+        return m_inbound_fanout_targets.contains(peer_id);
+    }
+
+    void RotateInboundFanoutTargets() EXCLUSIVE_LOCKS_REQUIRED(!m_txreconciliation_mutex) {
+        AssertLockNotHeld(m_txreconciliation_mutex);
+        LOCK(m_txreconciliation_mutex);
+
+        auto targets_size = std::floor(m_inbounds_count * INBOUND_FANOUT_DESTINATIONS_FRACTION);
+        if (targets_size == 0) {
+            return;
+        }
+
+        std::vector<NodeId> inbound_recon_peers;
+        inbound_recon_peers.reserve(m_inbounds_count);
+
+        // Collect all inbound reconciling peers ids in a vector and shuffle it
+        for (const auto& [peer_id, op_peer_state]: m_states) {
+            const auto peer_state = std::get_if<TxReconciliationState>(&op_peer_state);
+            if (peer_state && !peer_state->m_we_initiate) {
+                inbound_recon_peers.push_back(peer_id);
+            }
+        }
+        std::shuffle(inbound_recon_peers.begin(), inbound_recon_peers.end(), FastRandomContext());
+
+        // Pick the new selection of inbound fanout peers
+        Assume(inbound_recon_peers.size() > targets_size);
+        m_inbound_fanout_targets.clear();
+        m_inbound_fanout_targets.reserve(targets_size);
+        m_inbound_fanout_targets.insert(inbound_recon_peers.begin(), inbound_recon_peers.begin() + targets_size);
+
     }
 };
 
@@ -271,6 +330,12 @@ AddToSetResult TxReconciliationTracker::AddToSet(NodeId peer_id, const Wtxid& wt
     return m_impl->AddToSet(peer_id, wtxid);
 }
 
+bool TxReconciliationTracker::IsTransactionInSet(NodeId peer_id, const Wtxid& wtxid)
+{
+    return m_impl->IsTransactionInSet(peer_id, wtxid);
+}
+
+
 bool TxReconciliationTracker::TryRemovingFromSet(NodeId peer_id, const Wtxid& wtxid)
 {
     return m_impl->TryRemovingFromSet(peer_id, wtxid);
@@ -284,4 +349,14 @@ void TxReconciliationTracker::ForgetPeer(NodeId peer_id)
 bool TxReconciliationTracker::IsPeerRegistered(NodeId peer_id) const
 {
     return m_impl->IsPeerRegistered(peer_id);
+}
+
+bool TxReconciliationTracker::IsInboundFanoutTarget(NodeId peer_id)
+{
+    return m_impl->IsInboundFanoutTarget(peer_id);
+}
+
+void TxReconciliationTracker::RotateInboundFanoutTargets()
+{
+    return m_impl->RotateInboundFanoutTargets();
 }
