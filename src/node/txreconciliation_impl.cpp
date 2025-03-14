@@ -9,6 +9,8 @@
 #include <common/system.h>
 #include <util/check.h>
 
+// TODO: Not sure if this is still needed. Test in CI
+#include <cmath>
 #include <unordered_map>
 #include <variant>
 
