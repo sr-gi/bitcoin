@@ -608,6 +608,14 @@ private:
     bool ProcessOrphanTx(Peer& peer)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex, !m_tx_download_mutex);
 
+    /** Whether we should fanout to a given peer or not. Always returns true for non-Erlay peers
+     * For Erlay-peers, if the peer is inbound, returns true as long as the peer has been selected for fanout.
+     * If the peer is outbound, returns true as long as the transaction was received via fanout (further filtering will be performed
+     * before sending out the next INV message).
+     * Returns false otherwise.
+    */
+    bool ShouldFanoutTo(const std::shared_ptr<Peer> peer, bool reconciled) EXCLUSIVE_LOCKS_REQUIRED(m_peer_mutex);
+
     /** Process a single headers message from a peer.
      *
      * @param[in]   pfrom     CNode of the peer
@@ -2139,12 +2147,22 @@ std::pair<size_t, size_t> PeerManagerImpl::GetFanoutPeersCount()
     return std::pair(inbounds_fanout_tx_relay, outbounds_fanout_tx_relay);
 }
 
+bool PeerManagerImpl::ShouldFanoutTo(const PeerRef peer, bool reconciled)
+{
+    // At this point we are only considering peers to reconcile if they are inbounds and have not been flagged for fannout
+    // Outbound peers will be flagged at relay time, based on our heuristics for how much a transaction has been propagated
+    if (m_txreconciliation && m_txreconciliation->IsPeerRegistered(peer->m_id)) {
+        return !peer->m_is_inbound || m_txreconciliation->GetInboundFanoutTargets().contains(peer->m_id);
+    } else {
+        return !reconciled;
+    }
+}
+
 void PeerManagerImpl::RelayTransaction(const uint256& txid, const uint256& wtxid)
 {
     LOCK(m_peer_mutex);
-    for(auto& it : m_peer_map) {
-        Peer& peer = *it.second;
-        auto tx_relay = peer.GetTxRelay();
+    for(auto& [peer_id, peer] : m_peer_map) {
+        auto tx_relay = peer->GetTxRelay();
         if (!tx_relay) continue;
 
         LOCK(tx_relay->m_tx_inventory_mutex);
@@ -2155,9 +2173,30 @@ void PeerManagerImpl::RelayTransaction(const uint256& txid, const uint256& wtxid
         // in the announcement.
         if (tx_relay->m_next_inv_send_time == 0s) continue;
 
-        const uint256& hash{peer.m_wtxid_relay ? wtxid : txid};
+        const uint256& hash{peer->m_wtxid_relay ? wtxid : txid};
         if (!tx_relay->m_tx_inventory_known_filter.contains(hash)) {
-            tx_relay->m_tx_inventory_to_send.insert(hash);
+            // FIXME: reconciled is hardcoded here, we need to get it either from the mempool here or pass it along
+            //        but it is needed for the decissionmaking.
+            //        It can also be defered to later, but I don't think there's any point. If the transaction was reconciled
+            //        and the peer is outbound, don't need to add it to m_tx_inventory_to_send at all
+            bool fanout = ShouldFanoutTo(peer, false);
+            // FIXME: This bit here and the corresponding one in SendMessage are basically identical.
+            //        Check if there is a way to make them into a private function We would have to pass a
+            //        lambda that does the "insert into a collection part", which is what's different from both
+            if (!fanout) {
+                Assume(m_txreconciliation);
+                const auto result = m_txreconciliation->AddToSet(peer_id, Wtxid::FromUint256(wtxid));
+                if  (!result.m_succeeded) {
+                    fanout = true;
+                    if (const auto collision = result.m_collision; collision.has_value()) {
+                        Assume(m_txreconciliation->TryRemovingFromSet(peer_id, collision.value()));
+                        tx_relay->m_tx_inventory_to_send.insert(collision.value().ToUint256());
+                    }
+                }
+            }
+            if (fanout) {
+                tx_relay->m_tx_inventory_to_send.insert(hash);
+            }
         }
     };
 }
@@ -5783,13 +5822,54 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                         }
                         if (tx_relay->m_bloom_filter && !tx_relay->m_bloom_filter->IsRelevantAndUpdate(*txinfo.tx)) continue;
                         // Send
-                        vInv.push_back(inv);
-                        nRelayedTransactions++;
-                        if (vInv.size() == MAX_INV_SZ) {
-                            MakeAndPushMessage(*pto, NetMsgType::INV, vInv);
-                            vInv.clear();
+                        bool should_fanout = true;
+                        // For non-Erlay and inbound peer simply fanout. Erlay-enabled inbounds have been assigned transaction to reconcile
+                        // in RelayTransaction, so everything that was added to m_tx_inventory_to_send is to be fanout
+                        if (!pto->IsInboundConn() && m_txreconciliation && m_txreconciliation->IsPeerRegistered(pto->GetId())) {
+                            // For Erlay-enabled outbound peers we fanout based on how we have heard about this transaction
+                            // and how many announcements of this transactions have we sent and received
+                            size_t out_fanout_count {0};
+                            LOCK(m_peer_mutex);
+                            for (const auto& [cur_peer_id, cur_peer] : m_peer_map) {
+                                if (auto peer_tx_relay = cur_peer->GetTxRelay()) {
+                                    LOCK(peer_tx_relay->m_tx_inventory_mutex);
+                                    if (!pto->IsInboundConn() && peer_tx_relay->m_tx_inventory_known_filter.contains(hash)) {
+                                        out_fanout_count+=1;
+                                    }
+                                }
+                            }
+                            should_fanout = out_fanout_count <= OUTBOUND_FANOUT_THRESHOLD;
                         }
-                        tx_relay->m_tx_inventory_known_filter.insert(hash);
+
+                        auto add_to_inv_vec = [&](const CInv inv) EXCLUSIVE_LOCKS_REQUIRED(tx_relay->m_tx_inventory_mutex) {
+                            vInv.push_back(inv);
+                            nRelayedTransactions++;
+                            if (vInv.size() == MAX_INV_SZ) {
+                                MakeAndPushMessage(*pto, NetMsgType::INV, vInv);
+                                vInv.clear();
+                            }
+                            tx_relay->m_tx_inventory_known_filter.insert(inv.hash);
+                        };
+
+                        if (!should_fanout) {
+                            // Note we are not handling the case of ancestors being reconciled and descendants being fanout.
+                            // This can propagate descendants faster than ancestors, making them orphans. However, transactions
+                            // are picked for reconciliation if we consider they have been propagated enough, so in this case
+                            // odds are that the peer already knows about the parent (and it's queued to be announced or reconciled to us).
+                            Assume(m_txreconciliation);
+                            const auto result = m_txreconciliation->AddToSet(pto->GetId(), Wtxid::FromUint256(hash));
+                            if (!result.m_succeeded) {
+                                should_fanout = true;
+                                if (const auto collision = result.m_collision; collision.has_value()) {
+                                    // In case of a collision, this loop will increase nRelayedTransactions twice
+                                    Assume(m_txreconciliation->TryRemovingFromSet(pto->GetId(), collision.value()));
+                                    add_to_inv_vec(CInv(MSG_WTX, collision.value()));
+                                }
+                            }
+                        }
+                        if (should_fanout) {
+                            add_to_inv_vec(inv);
+                        }
                     }
 
                     // Ensure we'll respond to GETDATA requests for anything we've just announced

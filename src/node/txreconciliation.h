@@ -21,6 +21,13 @@ static constexpr uint32_t TXRECONCILIATION_VERSION{1};
  */
 constexpr size_t MAX_RECONSET_SIZE = 3000;
 
+/**
+ * Announce transactions via full wtxid to a limited number of inbound and outbound peers.
+ * Justification for these values are provided here:
+ * TODO: ADD link to updated justification */
+constexpr double INBOUND_FANOUT_DESTINATIONS_FRACTION = 0.1;
+constexpr size_t OUTBOUND_FANOUT_THRESHOLD = 4;
+
 enum class ReconciliationRegisterResult {
     NOT_FOUND,
     SUCCESS,
@@ -106,6 +113,12 @@ public:
     AddToSetResult AddToSet(NodeId peer_id, const Wtxid& wtxid);
 
     /**
+     * Checks whether a transaction is part of the peer's reconciliation set
+     * If include_delayed is set, look also in the delayed set.
+     */
+    bool IsTransactionInSet(NodeId peer_id, const Wtxid& wtxid);
+
+    /**
      * Before Step 2, we might want to remove a wtxid from the reconciliation set, for example if
      * the peer just announced the transaction to us.
      * Returns whether the wtxid was removed.
@@ -122,6 +135,16 @@ public:
      * Check if a peer is registered to reconcile transactions with us.
      */
     bool IsPeerRegistered(NodeId peer_id) const;
+
+    /**
+     * Returns an ordered collections of inbound peers to fanout to.
+    */
+   std::unordered_set<NodeId> GetInboundFanoutTargets();
+
+   /**
+    * Picks a different subset of peers to fanout to.
+    */
+   void RotateInboundFanoutTargets();
 };
 
 #endif // BITCOIN_NODE_TXRECONCILIATION_H
