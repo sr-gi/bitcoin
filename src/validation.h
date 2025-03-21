@@ -260,11 +260,14 @@ struct PackageMempoolAcceptResult
  * @param[in]  bypass_limits      When true, don't enforce mempool fee and capacity limits,
  *                                and set entry_sequence to zero.
  * @param[in]  test_accept        When true, run validation checks but don't submit to mempool.
+ * @param[in]  consider_fanout    When true, considers the transaction for fanout. Otherwise,
+ *                                flags it for set reconciliation. This only applies if the transaction
+ *                                is added to the mempool (so it has no effect when test_accept=true)
  *
  * @returns a MempoolAcceptResult indicating whether the transaction was accepted/rejected with reason.
  */
 MempoolAcceptResult AcceptToMemoryPool(Chainstate& active_chainstate, const CTransactionRef& tx,
-                                       int64_t accept_time, bool bypass_limits, bool test_accept)
+                                       int64_t accept_time, bool bypass_limits, bool test_accept, bool consider_fanout)
     EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 /**
@@ -1247,10 +1250,13 @@ public:
     /**
      * Try to add a transaction to the memory pool.
      *
-     * @param[in]  tx              The transaction to submit for mempool acceptance.
-     * @param[in]  test_accept     When true, run validation checks but don't submit to mempool.
+     * @param[in]  tx                  The transaction to submit for mempool acceptance.
+     * @param[in]  consider_fanout    When true, considers the transaction for fanout. Otherwise,
+     *                                flags it for set reconciliation. This only applies if the transaction
+     *                                is added to the mempool (so it has no effect when test_accept=true)
+     * @param[in]  test_accept         When true, run validation checks but don't submit to mempool.
      */
-    [[nodiscard]] MempoolAcceptResult ProcessTransaction(const CTransactionRef& tx, bool test_accept=false)
+    [[nodiscard]] MempoolAcceptResult ProcessTransaction(const CTransactionRef& tx, bool consider_fanout, bool test_accept=false)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     //! Load the block tree and coins database from disk, initializing state if we're running with -reindex

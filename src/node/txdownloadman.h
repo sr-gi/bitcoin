@@ -165,6 +165,9 @@ public:
     /** Returns next orphan tx to consider, or nullptr if none exist. */
     CTransactionRef GetTxToReconsider(NodeId nodeid);
 
+    /** Checks if we should consider fanning out a given orphan */
+    bool ConsiderOrphanForFanout(const Wtxid& wtxid) const;
+
     /** Check that all data structures are empty. */
     void CheckIsEmpty() const;
 

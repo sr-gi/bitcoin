@@ -614,7 +614,7 @@ private:
      * before sending out the next INV message to each peer).
      * Returns false otherwise.
     */
-    bool ShouldFanoutTo(const std::shared_ptr<Peer> peer, bool reconciled) EXCLUSIVE_LOCKS_REQUIRED(m_peer_mutex);
+   bool ShouldFanoutTo(const PeerRef peer, const Txid& txid) EXCLUSIVE_LOCKS_REQUIRED(m_peer_mutex, !m_mempool.cs);
 
     /** Process a single headers message from a peer.
      *
@@ -2147,14 +2147,17 @@ std::pair<size_t, size_t> PeerManagerImpl::GetFanoutPeersCount()
     return std::pair(inbounds_fanout_tx_relay, outbounds_fanout_tx_relay);
 }
 
-bool PeerManagerImpl::ShouldFanoutTo(const PeerRef peer, bool reconciled)
+bool PeerManagerImpl::ShouldFanoutTo(const PeerRef peer, const Txid& txid)
 {
-    // At this point we are only considering peers to reconcile if they are inbounds and have not been flagged for fannout
-    // Outbound peers will be flagged at relay time, based on our heuristics for how much a transaction has been propagated
+    LOCK(m_mempool.cs);
+    // We consider Erlay peers for fanout if they are within our inbound fanout targets, or if they are outbounds
+    // and the transaction was NOT received via set reconciliation. For the latter group, further filtering
+    // will be applied at relay time.
     if (m_txreconciliation && m_txreconciliation->IsPeerRegistered(peer->m_id)) {
-        return !peer->m_is_inbound || m_txreconciliation->IsInboundFanoutTarget(peer->m_id);
+        return (!peer->m_is_inbound && m_mempool.GetEntry(txid)->ConsiderFanout()) || m_txreconciliation->IsInboundFanoutTarget(peer->m_id);
     } else {
-        return !reconciled;
+        // For non-Erlay peers we always fanout (same applies if we do not support Erlay)
+        return true;
     }
 }
 
@@ -2175,11 +2178,7 @@ void PeerManagerImpl::RelayTransaction(const uint256& txid, const uint256& wtxid
 
         const uint256& hash{peer->m_wtxid_relay ? wtxid : txid};
         if (!tx_relay->m_tx_inventory_known_filter.contains(hash)) {
-            // FIXME: reconciled is hardcoded here, we need to get it either from the mempool here or pass it along
-            //        but it is needed for the decissionmaking.
-            //        It can also be defered to later, but I don't think there's any point. If the transaction was reconciled
-            //        and the peer is outbound, don't need to add it to m_tx_inventory_to_send at all
-            bool fanout = ShouldFanoutTo(peer, false);
+            bool fanout = ShouldFanoutTo(peer, Txid::FromUint256(txid));
             // FIXME: This bit here and the corresponding one in SendMessage are basically identical.
             //        Check if there is a way to make them into a private function We would have to pass a
             //        lambda that does the "insert into a collection part", which is what's different from both
@@ -3136,11 +3135,13 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
     CTransactionRef porphanTx = nullptr;
 
     while (CTransactionRef porphanTx = m_txdownloadman.GetTxToReconsider(peer.m_id)) {
-        const MempoolAcceptResult result = m_chainman.ProcessTransaction(porphanTx);
-        const TxValidationState& state = result.m_state;
         const Txid& orphanHash = porphanTx->GetHash();
         const Wtxid& orphan_wtxid = porphanTx->GetWitnessHash();
+        // For non-Erlay nodes, consider_fanout is always set to true
+        bool consider_fanout = m_txdownloadman.ConsiderOrphanForFanout(orphan_wtxid);
 
+        const MempoolAcceptResult result = m_chainman.ProcessTransaction(porphanTx, consider_fanout);
+        const TxValidationState& state = result.m_state;
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
             LogDebug(BCLog::TXPACKAGES, "   accepted orphan tx %s (wtxid=%s)\n", orphanHash.ToString(), orphan_wtxid.ToString());
             ProcessValidTx(peer.m_id, porphanTx, result.m_replaced_transactions);
@@ -4315,7 +4316,8 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         // ReceivedTx should not be telling us to validate the tx and a package.
         Assume(!package_to_validate.has_value());
 
-        const MempoolAcceptResult result = m_chainman.ProcessTransaction(ptx);
+        // TODO: Until the Erlay p2p flow is defined, all transactions are flagged for fanout
+        const MempoolAcceptResult result = m_chainman.ProcessTransaction(ptx, /*consider_fanout=*/true);
         const TxValidationState& state = result.m_state;
 
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {

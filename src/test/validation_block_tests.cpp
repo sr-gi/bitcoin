@@ -279,7 +279,8 @@ BOOST_AUTO_TEST_CASE(mempool_locks_reorg)
         {
             LOCK(cs_main);
             for (const auto& tx : txs) {
-                const MempoolAcceptResult result = m_node.chainman->ProcessTransaction(tx);
+                // We have no peers setup on this test, to consider_fanout value is irrelevant
+                const MempoolAcceptResult result = m_node.chainman->ProcessTransaction(tx, /*consider_fanout=*/true);
                 BOOST_REQUIRE(result.m_result_type == MempoolAcceptResult::ResultType::VALID);
             }
         }

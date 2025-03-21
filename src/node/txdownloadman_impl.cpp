@@ -75,6 +75,10 @@ CTransactionRef TxDownloadManager::GetTxToReconsider(NodeId nodeid)
 {
     return m_impl->GetTxToReconsider(nodeid);
 }
+bool TxDownloadManager::ConsiderOrphanForFanout(const Wtxid& wtxid) const
+{
+    return m_impl->ConsiderOrphanForFanout(wtxid);
+}
 void TxDownloadManager::CheckIsEmpty() const
 {
     m_impl->CheckIsEmpty();
@@ -573,6 +577,10 @@ bool TxDownloadManagerImpl::HaveMoreWork(NodeId nodeid)
 CTransactionRef TxDownloadManagerImpl::GetTxToReconsider(NodeId nodeid)
 {
     return m_orphanage.GetTxToReconsider(nodeid);
+}
+
+bool TxDownloadManagerImpl::ConsiderOrphanForFanout(const Wtxid& wtxid) const {
+    return m_orphanage.ConsiderOrphanForFanout(wtxid);
 }
 
 void TxDownloadManagerImpl::CheckIsEmpty(NodeId nodeid)

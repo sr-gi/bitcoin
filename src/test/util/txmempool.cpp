@@ -37,7 +37,7 @@ CTxMemPoolEntry TestMemPoolEntryHelper::FromTx(const CMutableTransaction& tx) co
 
 CTxMemPoolEntry TestMemPoolEntryHelper::FromTx(const CTransactionRef& tx) const
 {
-    return CTxMemPoolEntry{tx, nFee, TicksSinceEpoch<std::chrono::seconds>(time), nHeight, m_sequence, spendsCoinbase, sigOpCost, lp};
+    return CTxMemPoolEntry{tx, nFee, TicksSinceEpoch<std::chrono::seconds>(time), nHeight, m_sequence, spendsCoinbase, sigOpCost, lp, m_consider_fanout};
 }
 
 std::optional<std::string> CheckPackageMempoolAcceptResult(const Package& txns,
@@ -215,6 +215,6 @@ void AddToMempool(CTxMemPool& tx_pool, const CTxMemPoolEntry& entry)
     auto changeset = tx_pool.GetChangeSet();
     changeset->StageAddition(entry.GetSharedTx(), entry.GetFee(),
             entry.GetTime().count(), entry.GetHeight(), entry.GetSequence(),
-            entry.GetSpendsCoinbase(), entry.GetSigOpCost(), entry.GetLockPoints());
+            entry.GetSpendsCoinbase(), entry.GetSigOpCost(), entry.GetLockPoints(), entry.ConsiderFanout());
     changeset->Apply();
 }

@@ -12,7 +12,7 @@
 
 #include <cassert>
 
-bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
+bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer, bool consider_fanout)
 {
     const Txid& hash = tx->GetHash();
     const Wtxid& wtxid = tx->GetWitnessHash();
@@ -36,7 +36,7 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
         return false;
     }
 
-    auto ret = m_orphans.emplace(wtxid, OrphanTx{{tx, {peer}, Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME}, m_orphan_list.size()});
+    auto ret = m_orphans.emplace(wtxid, OrphanTx{{tx, {peer}, Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME, consider_fanout}, m_orphan_list.size()});
     assert(ret.second);
     m_orphan_list.push_back(ret.first);
     for (const CTxIn& txin : tx->vin) {
@@ -211,6 +211,12 @@ CTransactionRef TxOrphanage::GetTx(const Wtxid& wtxid) const
     return it != m_orphans.end() ? it->second.tx : nullptr;
 }
 
+bool TxOrphanage::ConsiderOrphanForFanout(const Wtxid& wtxid) const {
+    Assume(HaveTx(wtxid));
+    auto it = m_orphans.find(wtxid);
+    return it->second.consider_fanout;
+}
+
 bool TxOrphanage::HaveTxFromPeer(const Wtxid& wtxid, NodeId peer) const
 {
     auto it = m_orphans.find(wtxid);
@@ -317,7 +323,7 @@ std::vector<TxOrphanage::OrphanTxBase> TxOrphanage::GetOrphanTransactions() cons
     std::vector<OrphanTxBase> ret;
     ret.reserve(m_orphans.size());
     for (auto const& o : m_orphans) {
-        ret.push_back({o.second.tx, o.second.announcers, o.second.nTimeExpire});
+        ret.push_back({o.second.tx, o.second.announcers, o.second.nTimeExpire, o.second.consider_fanout});
     }
     return ret;
 }
