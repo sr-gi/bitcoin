@@ -324,7 +324,7 @@ FUZZ_TARGET(ephemeral_package_eval, .init = initialize_tx_pool)
                                     return ProcessNewPackage(chainstate, tx_pool, txs, /*test_accept=*/single_submit, /*client_maxfeerate=*/{}));
 
         const auto res = WITH_LOCK(::cs_main, return AcceptToMemoryPool(chainstate, txs.back(), GetTime(),
-                                   /*bypass_limits=*/fuzzed_data_provider.ConsumeBool(), /*test_accept=*/!single_submit));
+                                   /*bypass_limits=*/fuzzed_data_provider.ConsumeBool(), /*test_accept=*/!single_submit, /*consider_fanout=*/true));
 
         if (!single_submit && result_package.m_state.GetResult() != PackageValidationResult::PCKG_POLICY) {
             // We don't know anything about the validity since transactions were randomly generated, so
@@ -501,7 +501,7 @@ FUZZ_TARGET(tx_package_eval, .init = initialize_tx_pool)
         // Always set bypass_limits to false because it is not supported in ProcessNewPackage and
         // can be a source of divergence.
         const auto res = WITH_LOCK(::cs_main, return AcceptToMemoryPool(chainstate, txs.back(), GetTime(),
-                                   /*bypass_limits=*/false, /*test_accept=*/!single_submit));
+                                   /*bypass_limits=*/false, /*test_accept=*/!single_submit, /*consider_fanout=*/true));
         const bool passed = res.m_result_type == MempoolAcceptResult::ResultType::VALID;
 
         node.validation_signals->SyncWithValidationInterfaceQueue();

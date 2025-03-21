@@ -39,7 +39,8 @@ BOOST_FIXTURE_TEST_CASE(tx_mempool_block_doublespend, Dersig100Setup)
     const auto ToMemPool = [this](const CMutableTransaction& tx) {
         LOCK(cs_main);
 
-        const MempoolAcceptResult result = m_node.chainman->ProcessTransaction(MakeTransactionRef(tx));
+        // We have no peers setup on this test, to consider_fanout value is irrelevant
+        const MempoolAcceptResult result = m_node.chainman->ProcessTransaction(MakeTransactionRef(tx), /*consider_fanout=*/true);
         return result.m_result_type == MempoolAcceptResult::ResultType::VALID;
     };
 

@@ -483,7 +483,8 @@ CMutableTransaction TestChain100Setup::CreateValidMempoolTransaction(const std::
     // If submit=true, add transaction to the mempool.
     if (submit) {
         LOCK(cs_main);
-        const MempoolAcceptResult result = m_node.chainman->ProcessTransaction(MakeTransactionRef(mempool_txn));
+        // This is always called by tests that define no peers, so consider_fanout is irrelevant
+        const MempoolAcceptResult result = m_node.chainman->ProcessTransaction(MakeTransactionRef(mempool_txn), /*consider_fanout=*/true);
         assert(result.m_result_type == MempoolAcceptResult::ResultType::VALID);
     }
     return mempool_txn;
@@ -549,7 +550,7 @@ std::vector<CTransactionRef> TestChain100Setup::PopulateMempool(FastRandomContex
             auto changeset = m_node.mempool->GetChangeSet();
             changeset->StageAddition(ptx, /*fee=*/(total_in - num_outputs * amount_per_output),
                     /*time=*/0, /*entry_height=*/1, /*entry_sequence=*/0,
-                    /*spends_coinbase=*/false, /*sigops_cost=*/4, lp);
+                    /*spends_coinbase=*/false, /*sigops_cost=*/4, lp, /*consider_fanout*/true);
             changeset->Apply();
         }
         --num_transactions;
@@ -582,7 +583,7 @@ void TestChain100Setup::MockMempoolMinFee(const CFeeRate& target_feerate)
         auto changeset = m_node.mempool->GetChangeSet();
         changeset->StageAddition(tx, /*fee=*/tx_fee,
                 /*time=*/0, /*entry_height=*/1, /*entry_sequence=*/0,
-                /*spends_coinbase=*/true, /*sigops_cost=*/1, lp);
+                /*spends_coinbase=*/true, /*sigops_cost=*/1, lp, /*consider_fanout*/true);
         changeset->Apply();
     }
     m_node.mempool->TrimToSize(0);

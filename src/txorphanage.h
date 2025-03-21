@@ -29,7 +29,7 @@ static constexpr auto ORPHAN_TX_EXPIRE_INTERVAL{5min};
 class TxOrphanage {
 public:
     /** Add a new orphan transaction */
-    bool AddTx(const CTransactionRef& tx, NodeId peer);
+    bool AddTx(const CTransactionRef& tx, NodeId peer, bool consider_fanout=true); //FIXME: do not default here
 
     /** Add an additional announcer to an orphan if it exists. Otherwise, do nothing. */
     bool AddAnnouncer(const Wtxid& wtxid, NodeId peer);
@@ -48,6 +48,8 @@ public:
      *  it from the work set.
      */
     CTransactionRef GetTxToReconsider(NodeId peer);
+
+    bool ConsiderOrphanForFanout(const Wtxid& wtxid) const;
 
     /** Erase an orphan by wtxid */
     int EraseTx(const Wtxid& wtxid);
@@ -84,6 +86,7 @@ public:
         /** Peers added with AddTx or AddAnnouncer. */
         std::set<NodeId> announcers;
         NodeSeconds nTimeExpire;
+        bool consider_fanout;
 
         /** Get the weight of this transaction, an approximation of its memory usage. */
         unsigned int GetUsage() const {

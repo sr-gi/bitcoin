@@ -184,6 +184,7 @@ public:
 
     bool HaveMoreWork(NodeId nodeid);
     CTransactionRef GetTxToReconsider(NodeId nodeid);
+    bool ConsiderOrphanForFanout(const Wtxid& wtxid) const;
 
     void CheckIsEmpty();
     void CheckIsEmpty(NodeId nodeid);

@@ -29,9 +29,10 @@ static void AddTx(const CTransactionRef& tx, CTxMemPool& pool) EXCLUSIVE_LOCKS_R
     unsigned int sigOpCost{4};
     uint64_t fee{0};
     LockPoints lp;
+    bool consider_fanout = false;
     AddToMempool(pool, CTxMemPoolEntry(
         tx, fee, nTime, nHeight, sequence,
-        spendsCoinbase, sigOpCost, lp));
+        spendsCoinbase, sigOpCost, lp, consider_fanout));
 }
 
 static void MempoolCheckEphemeralSpends(benchmark::Bench& bench)
