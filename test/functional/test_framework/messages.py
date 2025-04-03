@@ -78,10 +78,10 @@ MAX_OP_RETURN_RELAY = 83
 DEFAULT_MEMPOOL_EXPIRY_HOURS = 336  # hours
 
 MAGIC_BYTES = {
-    "mainnet": b"\xf9\xbe\xb4\xd9",   # mainnet
-    "testnet3": b"\x0b\x11\x09\x07",  # testnet3
-    "regtest": b"\xfa\xbf\xb5\xda",   # regtest
-    "signet": b"\x0a\x03\xcf\x40",    # signet
+    "mainnet": b"\xf9\xbe\xb4\xd9",
+    "testnet4": b"\x1c\x16\x3f\x28",
+    "regtest": b"\xfa\xbf\xb5\xda",
+    "signet": b"\x0a\x03\xcf\x40",
 }
 
 def sha256(s):
@@ -1917,6 +1917,27 @@ class msg_sendtxrcncl:
     def __repr__(self):
         return "msg_sendtxrcncl(version=%lu, salt=%lu)" %\
             (self.version, self.salt)
+
+class msg_reqtxrcncl:
+    __slots__ = ("set_size", "q")
+    msgtype = b"reqtxrcncl"
+
+    def __init__(self):
+        self.set_size = 0
+        self.q = 0
+
+    def deserialize(self, f):
+        self.set_size = int.from_bytes(f.read(2), "little")
+        self.q = int.from_bytes(f.read(2), "little")
+
+    def serialize(self):
+        r = self.set_size.to_bytes(4, "little")
+        r += self.q.to_bytes(4, "little")
+        return r
+
+    def __repr__(self):
+        return "msg_reqtxrcncl(set_size=%lu, q=%lu)" %\
+            (self.set_size, self.q)
 
 class TestFrameworkScript(unittest.TestCase):
     def test_addrv2_encode_decode(self):
