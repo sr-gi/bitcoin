@@ -218,6 +218,19 @@ public:
         m_short_id_mapping.clear();
     }
 
+    /**
+     * Be ready to respond to extension request, to compute the extended sketch over
+     * the same initial set (without transactions received during the reconciliation).
+     * Allow to store new transactions separately in the original set.
+     */
+    void PrepareForExtensionRequest(uint16_t sketch_capacity)
+    {
+        Assume(!m_we_initiate);
+        // Remember the current capacity so we can double it if the Sketch decoding fails on the peer's end.
+        m_capacity_snapshot = sketch_capacity;
+        SnapshotLocalSet();
+    }
+
     std::vector<Wtxid> GetAllTransactions() const
     {
         return std::vector<Wtxid>(m_local_set.begin(), m_local_set.end());
@@ -686,6 +699,7 @@ public:
         }
 
         recon_state.m_phase = Phase::INIT_RESPONDED;
+        recon_state.PrepareForExtensionRequest(sketch_capacity);
 
         LogDebug(BCLog::TXRECONCILIATION, "Responding with a sketch to reconciliation initiated by peer=%d: sending sketch of capacity=%i.\n",
             peer_id, sketch_capacity);
