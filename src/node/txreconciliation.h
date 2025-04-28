@@ -26,7 +26,7 @@ constexpr size_t MAX_RECONSET_SIZE = 3000;
  * Justification for these values are provided here:
  * TODO: ADD link to justification based on simulation results */
 constexpr double INBOUND_FANOUT_DESTINATIONS_FRACTION = 0.1;
-constexpr size_t OUTBOUND_FANOUT_THRESHOLD = 4;
+constexpr size_t OUTBOUND_FANOUT_THRESHOLD = 1;
 
 /**
  * Interval for inbound peer fanout selection. The subset is rotated on a timer.
