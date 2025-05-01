@@ -5916,6 +5916,7 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
 
         // Check whether periodic sends should happen
         bool fSendTrickle = pto->HasPermission(NetPermissionFlags::NoBan);
+        LogDebug(BCLog::NET, "NoBan?: %d\n", fSendTrickle);
         if (auto tx_relay = peer->GetTxRelay(); tx_relay != nullptr) {
             std::vector<std::pair<uint256, uint16_t>> to_be_announced{};
             {
