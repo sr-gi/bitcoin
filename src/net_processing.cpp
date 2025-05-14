@@ -6012,15 +6012,18 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                 }
             } // Unlock the m_tx_inventory_mutex so we can count over m_peer_map
 
-            // Only care about fanout count if we support Erlay
-            if (m_txreconciliation) {
+            // Only care about fanout count if we support Erlay and the target peer is outbound
+            if (m_txreconciliation && !pto->IsInboundConn()) {
                 LOCK(m_peer_mutex);
                 for (auto& [hash, out_fanout_count] : to_be_announced) {
                     for (const auto& [cur_peer_id, cur_peer] : m_peer_map) {
-                        if (auto peer_tx_relay = cur_peer->GetTxRelay()) {
-                            LOCK(peer_tx_relay->m_tx_inventory_mutex);
-                            if (!pto->IsInboundConn() && peer_tx_relay->m_tx_inventory_known_filter.contains(hash)) {
-                                out_fanout_count+=1;
+                        // Filter out inbound peers, since they do not add to the count
+                        if (!cur_peer->m_is_inbound) {
+                            if (auto peer_tx_relay = cur_peer->GetTxRelay()) {
+                                LOCK(peer_tx_relay->m_tx_inventory_mutex);
+                                if (peer_tx_relay->m_tx_inventory_known_filter.contains(hash)) {
+                                    out_fanout_count+=1;
+                                }
                             }
                         }
                     }
