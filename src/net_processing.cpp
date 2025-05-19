@@ -1949,7 +1949,9 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
     // While Erlay support is incomplete, it must be enabled explicitly via -txreconciliation.
     // This argument can go away after Erlay support is complete.
     if (opts.reconcile_txs) {
-        m_txreconciliation = std::make_unique<node::TxReconciliationTracker>(node::TXRECONCILIATION_VERSION);
+        LogDebug(BCLog::NET, "Initializing TxReconciliationTracker with params: inbound_fanout_destinations_fraction(%f), outbound_fanout_threshold(%d)",
+            opts.inbound_fanout_destinations_fraction, opts.outbound_fanout_threshold);
+        m_txreconciliation = std::make_unique<TxReconciliationTracker>(node::TXRECONCILIATION_VERSION, opts.inbound_fanout_destinations_fraction, opts.outbound_fanout_threshold);
     }
 }
 
@@ -6035,7 +6037,11 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                     if(!hash.IsWtxid()) continue; // We do no reconcile by txid
                     // Shortcut if the transaction was received via reconciliation, we can simply keep reconciling
                     if (m_txreconciliation->WasTransactionRecentlyRequested(std::get<Wtxid>(hash))) {
+<<<<<<< HEAD
                         out_fanout_count = node::OUTBOUND_FANOUT_THRESHOLD;
+=======
+                        out_fanout_count = m_txreconciliation->GetOutboundFanoutThreshold();
+>>>>>>> 0ab01fce45 (REMOVE-ME, SIMS-ONLY: Adds options to configure in/out fanout rates)
                         continue;
                     }
                     for (const auto& [cur_peer_id, cur_peer] : m_peer_map) {
@@ -6064,7 +6070,11 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                     // and how many announcements of this transactions have we sent and received.
                     // TODO: If we are the transaction source, we should reduce the threshold by 1, since this the only case
                     // where we are not accounting for at least one reception
+<<<<<<< HEAD
                     should_fanout = out_fanout_count <= node::OUTBOUND_FANOUT_THRESHOLD;
+=======
+                    should_fanout = out_fanout_count <= m_txreconciliation->GetOutboundFanoutThreshold();
+>>>>>>> 0ab01fce45 (REMOVE-ME, SIMS-ONLY: Adds options to configure in/out fanout rates)
                 }
 
                 CInv inv(peer->m_wtxid_relay ? MSG_WTX : MSG_TX, hash.ToUint256());

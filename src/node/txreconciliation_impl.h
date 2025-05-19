@@ -120,7 +120,7 @@ class TxReconciliationTracker {
     const std::unique_ptr<TxReconciliationTrackerImpl> m_impl;
 
 public:
-    explicit TxReconciliationTracker(uint32_t recon_version);
+    explicit TxReconciliationTracker(uint32_t recon_version, double inbound_fanout_destinations_fraction, uint32_t outbound_fanout_threshold);
     ~TxReconciliationTracker();
 
     /**
@@ -247,6 +247,11 @@ public:
 
     /** Update the next inbound peer rotation time. */
     void SetNextInboundPeerRotationTime(std::chrono::microseconds next_time);
+
+    /**
+    * Get the threshold of fanout outbound peers
+    */
+    uint32_t GetOutboundFanoutThreshold();
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXRECONCILIATION_IMPL_H

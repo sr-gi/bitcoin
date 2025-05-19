@@ -403,7 +403,7 @@ private:
     }
 
 public:
-    explicit TxReconciliationTrackerImpl(uint32_t recon_version) : m_recon_version(recon_version) {}
+    explicit TxReconciliationTrackerImpl(uint32_t recon_version, double inbound_fanout_destinations_fraction, uint32_t outbound_fanout_threshold) : m_recon_version(recon_version), m_inbound_fanout_destinations_fraction(inbound_fanout_destinations_fraction), m_outbound_fanout_threshold(outbound_fanout_threshold) {}
 
     uint64_t PreRegisterPeer(NodeId peer_id, uint64_t local_salt) EXCLUSIVE_LOCKS_REQUIRED(!m_txreconciliation_mutex)
     {
@@ -454,9 +454,9 @@ public:
         if (is_peer_inbound && m_inbounds_count < std::numeric_limits<size_t>::max()) {
             ++m_inbounds_count;
 
-            if (m_inbound_fanout_targets.size() <  std::floor(m_inbounds_count * INBOUND_FANOUT_DESTINATIONS_FRACTION)) {
+            if (m_inbound_fanout_targets.size() <  std::floor(m_inbounds_count * m_inbound_fanout_destinations_fraction)) {
                 // Scale up fanout targets as we get more connections. Targets will be rotated periodically via RotateInboundFanoutTargets
-                if (FastRandomContext().randrange(10) <= INBOUND_FANOUT_DESTINATIONS_FRACTION * 10) {
+                if (FastRandomContext().randrange(10) <= m_inbound_fanout_destinations_fraction * 10) {
                     m_inbound_fanout_targets.insert(peer_id);
                 }
             }
@@ -797,7 +797,7 @@ public:
         AssertLockNotHeld(m_txreconciliation_mutex);
         LOCK(m_txreconciliation_mutex);
 
-        auto targets_size = std::floor(m_inbounds_count * INBOUND_FANOUT_DESTINATIONS_FRACTION);
+        auto targets_size = std::floor(m_inbounds_count * m_inbound_fanout_destinations_fraction);
         if (targets_size == 0) {
             return;
         }
