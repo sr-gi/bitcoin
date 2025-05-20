@@ -2198,6 +2198,7 @@ bool PeerManagerImpl::ShouldFanoutTo(const PeerRef peer, bool consider_fanout)
         return (!peer->m_is_inbound && consider_fanout) || m_txreconciliation->IsInboundFanoutTarget(peer->m_id);
     } else {
         // For non-Erlay peers we always fanout (same applies if we do not support Erlay)
+        LogDebug(BCLog::NET, "Flagging peer %d for fanout. Recon: %d, registered: %d", peer->m_id, m_txreconciliation, m_txreconciliation->IsPeerRegistered(peer->m_id));
         return true;
     }
 }
@@ -2235,6 +2236,7 @@ void PeerManagerImpl::RelayTransaction(const uint256& txid, const uint256& wtxid
                 }
             }
             if (fanout) {
+                LogDebug(BCLog::NET, "Scheduling fanout for peer %d, txid: %s\n", peer->m_id, wtxid.ToString());
                 tx_relay->m_tx_inventory_to_send.insert(hash);
             }
         }
@@ -6084,8 +6086,15 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                 tx_relay->m_last_inv_sequence = m_mempool.GetSequence();
             }
         }
-        if (!vInv.empty())
+        if (!vInv.empty()) {
+            LogDebug(BCLog::NET, "Fanning out for peer %d (IsInboundConn: %d)\n", pto->GetId(), pto->IsInboundConn());
+            std::string invs;
+            for (auto& inv : vInv) {
+                invs += inv.ToString() + ", ";
+            }
+            LogDebug(BCLog::NET, "INVS: [%s]\n", invs);
             MakeAndPushMessage(*pto, NetMsgType::INV, vInv);
+        }
 
         //
         // Message: reconciliation response
