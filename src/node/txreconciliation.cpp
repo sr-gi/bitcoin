@@ -794,7 +794,7 @@ public:
         // FIXME: I'm not sure this may be the best way of doing this (as opposed to having a filter per peer). But it'll do for now
         for (auto& [peer_id, opt_peer_state]: m_states) {
             auto peer_state = std::get<TxReconciliationState>(opt_peer_state);
-            // We only care about outbound peers
+            // We only care about outbound peers.
             if (!peer_state.m_we_initiate) continue;
             auto short_id = peer_state.ComputeShortID(wtxid);
             WriteLE32(data.data(), short_id);
