@@ -100,8 +100,10 @@ void TxDownloadManagerImpl::BlockConnected(const std::shared_ptr<const CBlock>& 
     m_orphanage.EraseForBlock(*pblock);
 
     for (const auto& ptx : pblock->vtx) {
+        LogDebug(BCLog::NET, "Adding transaction to recently confirmed. wtx: %s", ptx->GetHash().ToString());
         RecentConfirmedTransactionsFilter().insert(ptx->GetHash().ToUint256());
         if (ptx->HasWitness()) {
+            LogDebug(BCLog::NET, "Also adding by wtxid. wtx: %s", ptx->GetWitnessHash().ToString());
             RecentConfirmedTransactionsFilter().insert(ptx->GetWitnessHash().ToUint256());
         }
         m_txrequest.ForgetTxHash(ptx->GetHash());
@@ -128,7 +130,10 @@ bool TxDownloadManagerImpl::AlreadyHaveTx(const GenTxid& gtxid, bool include_rec
 
     if (gtxid.IsWtxid()) {
         // Normal query by wtxid.
-        if (m_orphanage.HaveTx(Wtxid::FromUint256(hash))) return true;
+        if (m_orphanage.HaveTx(Wtxid::FromUint256(hash))) {
+            LogDebug(BCLog::NET, "Transaction found in orphanage. wtx: %s", hash.ToString());
+            return true;
+        }
     } else {
         // Never query by txid: it is possible that the transaction in the orphanage has the same
         // txid but a different witness, which would give us a false positive result. If we decided
@@ -141,12 +146,23 @@ bool TxDownloadManagerImpl::AlreadyHaveTx(const GenTxid& gtxid, bool include_rec
         // While we won't query by txid, we can try to "guess" what the wtxid is based on the txid.
         // A non-segwit transaction's txid == wtxid. Query this txid "casted" to a wtxid. This will
         // help us find non-segwit transactions, saving bandwidth, and should have no false positives.
-        if (m_orphanage.HaveTx(Wtxid::FromUint256(hash))) return true;
+        if (m_orphanage.HaveTx(Wtxid::FromUint256(hash))){
+            LogDebug(BCLog::NET, "Transaction found in orphanage (by txid, even though we should not have hit this). wtx: %s", hash.ToString());
+            return true;
+        };
     }
 
-    if (include_reconsiderable && RecentRejectsReconsiderableFilter().contains(hash)) return true;
+    if (include_reconsiderable && RecentRejectsReconsiderableFilter().contains(hash)) {
+        LogDebug(BCLog::NET, "Transaction in RecentRejectReconsiderable. wtx: %s", hash.ToString());
+        return true;
+    };
 
-    if (RecentConfirmedTransactionsFilter().contains(hash)) return true;
+    if (RecentConfirmedTransactionsFilter().contains(hash)) {
+        LogDebug(BCLog::NET, "Transaction in RecentlyConfirmed filter. wtx: %s", hash.ToString());
+        return true;
+    };
+
+    LogDebug(BCLog::NET, "Recently rejected=%d, in_mempool=%d. wtx: %s", RecentRejectsFilter().contains(hash), m_opts.m_mempool.exists(gtxid), hash.ToString());
 
     return RecentRejectsFilter().contains(hash) || m_opts.m_mempool.exists(gtxid);
 }
@@ -182,21 +198,27 @@ bool TxDownloadManagerImpl::AddTxAnnouncement(NodeId peer, const GenTxid& gtxid,
         const auto wtxid{Wtxid::FromUint256(gtxid.GetHash())};
         if (auto orphan_tx{m_orphanage.GetTx(wtxid)}) {
             auto unique_parents{GetUniqueParents(*orphan_tx)};
+            LogDebug(BCLog::NET, "Transaction found in orphanage. wtx: %s", wtxid.ToString());
             std::erase_if(unique_parents, [&](const auto& txid){
-                return AlreadyHaveTx(GenTxid::Txid(txid), /*include_reconsiderable=*/false);
+                auto already_have = AlreadyHaveTx(GenTxid::Txid(txid), /*include_reconsiderable=*/false);
+                LogDebug(BCLog::NET, "Unique parents NOT empty. wtx: %s, have=%d", wtxid.ToString(), already_have);
+                return already_have;
             });
 
             // The missing parents may have all been rejected or accepted since the orphan was added to the orphanage.
             // Do not delete from the orphanage, as it may be queued for processing.
             if (unique_parents.empty()) {
+                LogDebug(BCLog::NET, "Unique parents empty. wtx: %s", wtxid.ToString());
                 return true;
             }
 
             if (MaybeAddOrphanResolutionCandidate(unique_parents, wtxid, peer, now)) {
+                LogDebug(BCLog::NET, "Adding announcer. wtx: %s", wtxid.ToString());
                 m_orphanage.AddAnnouncer(orphan_tx->GetWitnessHash(), peer);
             }
 
             // Return even if the peer isn't an orphan resolution candidate. This would be caught by AlreadyHaveTx.
+            LogDebug(BCLog::NET, "Simply return. wtx: %s", wtxid.ToString());
             return true;
         }
     }
