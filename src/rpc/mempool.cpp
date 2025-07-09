@@ -283,6 +283,8 @@ static std::vector<RPCResult> MempoolEntryDescription()
             {RPCResult{RPCResult::Type::STR_HEX, "transactionid", "child transaction id"}}},
         RPCResult{RPCResult::Type::BOOL, "bip125-replaceable", "Whether this transaction signals BIP125 replaceability or has an unconfirmed ancestor signaling BIP125 replaceability. (DEPRECATED)\n"},
         RPCResult{RPCResult::Type::BOOL, "unbroadcast", "Whether this transaction is currently unbroadcast (initial broadcast not yet acknowledged by any peers)"},
+        RPCResult{RPCResult::Type::NUM_TIME, "first_inv_time", /*optional=*/true, "local time transaction was first announced to us, in microseconds since 1 Jan 1970 GMT. Unset if we are the origin, or the transaction was never announced"},
+        RPCResult{RPCResult::Type::NUM_TIME, "recv_time", /*optional=*/true, "local time transaction was received by the node, in microseconds since 1 Jan 1970 GMT. Unset if we are the origin"},
     };
 }
 
@@ -579,6 +581,7 @@ static RPCHelpMan getmempoolentry()
     uint256 hash = ParseHashV(request.params[0], "parameter 1");
 
     const CTxMemPool& mempool = EnsureAnyMemPool(request.context);
+    PeerManager& peerman = EnsurePeerman(EnsureAnyNodeContext(request.context));
     LOCK(mempool.cs);
 
     const auto entry{mempool.GetEntry(Txid::FromUint256(hash))};
@@ -588,6 +591,13 @@ static RPCHelpMan getmempoolentry()
 
     UniValue info(UniValue::VOBJ);
     entryToJSON(mempool, info, *entry);
+    const auto wtxid = entry->GetTx().GetWitnessHash().ToUint256();
+    if (auto maybe_heard_of = peerman.GetTxFirstInvTime(wtxid)) {
+        info.pushKV("first_inv_time", maybe_heard_of->count());
+    }
+    if (auto maybe_seen = peerman.GetTxRecvTime(wtxid)) {
+        info.pushKV("recv_time", maybe_seen->count());
+    }
     return info;
 },
     };
