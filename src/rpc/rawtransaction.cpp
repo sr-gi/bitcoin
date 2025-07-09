@@ -11,6 +11,7 @@
 #include <core_io.h>
 #include <index/txindex.h>
 #include <key_io.h>
+#include <net_processing.h>
 #include <node/blockstorage.h>
 #include <node/coin.h>
 #include <node/context.h>
@@ -321,6 +322,7 @@ static RPCHelpMan getrawtransaction()
 {
     const NodeContext& node = EnsureAnyNodeContext(request.context);
     ChainstateManager& chainman = EnsureChainman(node);
+    PeerManager& peerman = EnsurePeerman(node);
 
     uint256 hash = ParseHashV(request.params[0], "parameter 1");
     const CBlockIndex* blockindex = nullptr;
@@ -383,6 +385,13 @@ static RPCHelpMan getrawtransaction()
     }
     if (verbosity == 1) {
         TxToJSON(*tx, hash_block, result, chainman.ActiveChainstate());
+        if (auto maybe_heard_of = peerman.GetTxFirstAnnouncementTime(tx->GetWitnessHash().ToUint256())) {
+            result.pushKV("first_heard_of", maybe_heard_of->count());
+        }
+        if (auto maybe_seen = peerman.GetTxFirstSeenTime(tx->GetWitnessHash().ToUint256())) {
+            result.pushKV("first_seen", maybe_seen->count());
+        }
+
         return result;
     }
 
