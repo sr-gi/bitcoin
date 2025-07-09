@@ -548,6 +548,8 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_most_recent_block_mutex, !m_headers_presync_mutex, g_msgproc_mutex, !m_tx_download_mutex);
     void UpdateLastBlockAnnounceTime(NodeId node, int64_t time_in_seconds) override;
     ServiceFlags GetDesirableServiceFlags(ServiceFlags services) const override;
+    std::optional<std::chrono::microseconds> GetTxFirstInvTime(const uint256& txid) const override;
+    std::optional<std::chrono::microseconds> GetTxRecvTime(const uint256& txid) const override;
 
 private:
     /** Consider evicting an outbound peer based on the amount of time they've been behind our tip */
@@ -766,6 +768,15 @@ private:
     node::TxDownloadManager m_txdownloadman GUARDED_BY(m_tx_download_mutex);
 
     std::unique_ptr<TxReconciliationTracker> m_txreconciliation;
+
+    // This two maps are keeping track of when an the first inventory message of a transaction
+    // and the transaction are received, respectively. They are cleared when transaction in the
+    // mempool are confirmed.
+    // NOTE: DO NOT RUN THIS IN A PRODUCTION ENVIRONMENT. DATA IS NOT CLEARED FOR TRANSACTIONS
+    // THAT ARE NEVER RECEIVED OR DROPPED FROM THE MEMPOOL FOR WHATEVER REASON BEYOND CONFIRMING.
+    // THIS IN ONLY SUITABLE FOR SIMULATED ENVIRONMENTS
+    std::map<uint256, std::chrono::microseconds> m_tx_first_inv_time;
+    std::map<uint256, std::chrono::microseconds> m_tx_recvtime;
 
     /** The height of the best chain */
     std::atomic<int> m_best_height{-1};
@@ -1676,6 +1687,18 @@ ServiceFlags PeerManagerImpl::GetDesirableServiceFlags(ServiceFlags services) co
     return ServiceFlags(NODE_NETWORK | NODE_WITNESS);
 }
 
+std::optional<std::chrono::microseconds> PeerManagerImpl::GetTxFirstInvTime(const uint256& txid) const
+{
+    auto it = m_tx_first_inv_time.find(txid);
+    return it != m_tx_first_inv_time.end() ? std::optional{it->second} : std::nullopt;
+};
+
+std::optional<std::chrono::microseconds> PeerManagerImpl::GetTxRecvTime(const uint256& txid) const
+{
+    auto it = m_tx_recvtime.find(txid);
+    return it != m_tx_recvtime.end() ? std::optional{it->second} : std::nullopt;
+};
+
 PeerRef PeerManagerImpl::GetPeerRef(NodeId id) const
 {
     LOCK(m_peer_mutex);
@@ -1966,6 +1989,13 @@ void PeerManagerImpl::BlockConnected(
     }
     LOCK(m_tx_download_mutex);
     m_txdownloadman.BlockConnected(pblock);
+
+    for (const auto& ptx : pblock->vtx) {
+        m_tx_first_inv_time.erase(ptx->GetWitnessHash().ToUint256());
+        m_tx_recvtime.erase(ptx->GetWitnessHash().ToUint256());
+    }
+    LogDebug(BCLog::NET, "Removing accepted transaction from m_tx_first_inv_time and m_tx_recvtime. Now maps have (%d, %d) entries\n",
+                          m_tx_first_inv_time.size(), m_tx_recvtime.size());
 }
 
 void PeerManagerImpl::BlockDisconnected(const std::shared_ptr<const CBlock> &block, const CBlockIndex* pindex)
@@ -3964,6 +3994,10 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     return;
                 }
                 const GenTxid gtxid = ToGenTxid(inv);
+                // We add data by wtxid
+                if (m_tx_first_inv_time.emplace(inv.hash, current_time).second) {
+                    LogDebug(BCLog::NET, "Adding %s to m_tx_first_inv_time\n", inv.hash.ToString());
+                }
                 AddKnownTx(*peer, inv.hash);
 
                 if (!m_chainman.IsInitialBlockDownload()) {
@@ -4289,6 +4323,9 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
             ProcessValidTx(pfrom.GetId(), ptx, result.m_replaced_transactions);
             pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
+            if (m_tx_recvtime.emplace(wtxid.ToUint256(), GetTime<std::chrono::microseconds>()).second) {
+                LogDebug(BCLog::NET, "Adding %s to m_tx_recvtime\n", wtxid.ToString());
+            }
         }
         if (state.IsInvalid()) {
             if (auto package_to_validate{ProcessInvalidTx(pfrom.GetId(), ptx, state, /*first_time_failure=*/true)}) {
