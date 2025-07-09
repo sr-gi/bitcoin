@@ -548,6 +548,8 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_most_recent_block_mutex, !m_headers_presync_mutex, g_msgproc_mutex, !m_tx_download_mutex);
     void UpdateLastBlockAnnounceTime(NodeId node, int64_t time_in_seconds) override;
     ServiceFlags GetDesirableServiceFlags(ServiceFlags services) const override;
+    std::optional<std::chrono::microseconds> GetTxFirstAnnouncementTime(const uint256& txid) const override;
+    std::optional<std::chrono::microseconds> GetTxFirstSeenTime(const uint256& txid) const override;
 
 private:
     /** Consider evicting an outbound peer based on the amount of time they've been behind our tip */
@@ -772,6 +774,10 @@ private:
     node::TxDownloadManager m_txdownloadman GUARDED_BY(m_tx_download_mutex);
 
     std::unique_ptr<TxReconciliationTracker> m_txreconciliation;
+
+    // FIXME: Protect this with a mutex and clean it each block
+    std::map<uint256, std::chrono::microseconds> m_first_heard_of_tx;
+    std::map<uint256, std::chrono::microseconds> m_first_seen_tx;
 
     /** The height of the best chain */
     std::atomic<int> m_best_height{-1};
@@ -1682,6 +1688,18 @@ ServiceFlags PeerManagerImpl::GetDesirableServiceFlags(ServiceFlags services) co
     return ServiceFlags(NODE_NETWORK | NODE_WITNESS);
 }
 
+std::optional<std::chrono::microseconds> PeerManagerImpl::GetTxFirstAnnouncementTime(const uint256& txid) const
+{
+    auto it = m_first_heard_of_tx.find(txid);
+    return it != m_first_heard_of_tx.end() ? std::optional{it->second} : std::nullopt;
+};
+
+std::optional<std::chrono::microseconds> PeerManagerImpl::GetTxFirstSeenTime(const uint256& txid) const
+{
+    auto it = m_first_seen_tx.find(txid);
+    return it != m_first_seen_tx.end() ? std::optional{it->second} : std::nullopt;
+};
+
 PeerRef PeerManagerImpl::GetPeerRef(NodeId id) const
 {
     LOCK(m_peer_mutex);
@@ -1998,6 +2016,12 @@ void PeerManagerImpl::BlockConnected(
     }
     LOCK(m_tx_download_mutex);
     m_txdownloadman.BlockConnected(pblock);
+
+    for (const auto& ptx : pblock->vtx) {
+        m_first_heard_of_tx.erase(ptx->GetWitnessHash().ToUint256());
+        m_first_seen_tx.erase(ptx->GetWitnessHash().ToUint256());
+        LogDebug(BCLog::NET, "Removing %s from m_first_heard_of_tx and m_first_seen_tx\n", ptx->GetWitnessHash().ToString());
+    }
 }
 
 void PeerManagerImpl::BlockDisconnected(const std::shared_ptr<const CBlock> &block, const CBlockIndex* pindex)
@@ -3996,6 +4020,11 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     return;
                 }
                 const GenTxid gtxid = ToGenTxid(inv);
+                // We add data by wtxid
+                if (m_first_heard_of_tx.emplace(inv.hash, current_time).second) {
+                    LogDebug(BCLog::NET, "Adding %s to m_first_heard_of_tx\n", inv.hash.ToString());
+                }
+
                 AddKnownTx(*peer, inv.hash);
 
                 if (!m_chainman.IsInitialBlockDownload()) {
@@ -4322,6 +4351,10 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
             ProcessValidTx(pfrom.GetId(), ptx, result.m_replaced_transactions);
             pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
+            if (m_first_seen_tx.emplace(wtxid, GetTime<std::chrono::microseconds>()).second) {
+                LogDebug(BCLog::NET, "Adding %s to m_first_seen_tx\n", wtxid.ToString());
+            }
+
         }
         if (state.IsInvalid()) {
             if (auto package_to_validate{ProcessInvalidTx(pfrom.GetId(), ptx, state, /*first_time_failure=*/true)}) {

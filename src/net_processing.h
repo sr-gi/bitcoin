@@ -165,6 +165,10 @@ public:
      * we do not have a confirmed set of service flags.
     */
     virtual ServiceFlags GetDesirableServiceFlags(ServiceFlags services) const = 0;
+
+    virtual std::optional<std::chrono::microseconds> GetTxFirstAnnouncementTime(const uint256& txid) const = 0;
+
+    virtual std::optional<std::chrono::microseconds> GetTxFirstSeenTime(const uint256& txid) const = 0;
 };
 
 #endif // BITCOIN_NET_PROCESSING_H
