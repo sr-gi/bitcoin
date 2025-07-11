@@ -63,6 +63,8 @@ struct Announcement {
     const uint256 m_txhash;
     /** For CANDIDATE_{DELAYED,BEST,READY} the reqtime; for REQUESTED the expiry. */
     std::chrono::microseconds m_time;
+    /** The first time this transaction was announced to us by any peer. All announcement of a given transaction will share this value */
+    std::chrono::microseconds m_first_inv_time;
     /** What peer the request was from. */
     const NodeId m_peer;
     /** What sequence number this announcement has. */
@@ -96,8 +98,8 @@ struct Announcement {
     }
 
     /** Construct a new announcement from scratch, initially in CANDIDATE_DELAYED state. */
-    Announcement(const GenTxid& gtxid, NodeId peer, bool preferred, std::chrono::microseconds reqtime,
-                 SequenceNumber sequence)
+    Announcement(const GenTxid& gtxid, NodeId peer, bool preferred, std::chrono::microseconds first_heard_of,
+                std::chrono::microseconds reqtime, SequenceNumber sequence)
         : m_txhash(gtxid.GetHash()), m_time(reqtime), m_peer(peer), m_sequence(sequence), m_preferred(preferred),
           m_is_wtxid{gtxid.IsWtxid()} {}
 };
@@ -584,17 +586,20 @@ public:
     }
 
     void ReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred,
-        std::chrono::microseconds reqtime)
+        std::chrono::microseconds recvtime, std::chrono::microseconds delay)
     {
+        const uint256 txhash = gtxid.GetHash();
         // Bail out if we already have a CANDIDATE_BEST announcement for this (txhash, peer) combination. The case
         // where there is a non-CANDIDATE_BEST announcement already will be caught by the uniqueness property of the
         // ByPeer index when we try to emplace the new object below.
-        if (m_index.get<ByPeer>().count(ByPeerView{peer, true, gtxid.GetHash()})) return;
+        if (m_index.get<ByPeer>().count(ByPeerView{peer, true, txhash})) return;
 
         // Try creating the announcement with CANDIDATE_DELAYED state (which will fail due to the uniqueness
         // of the ByPeer index if a non-CANDIDATE_BEST announcement already exists with the same txhash and peer).
         // Bail out in that case.
-        auto ret = m_index.get<ByPeer>().emplace(gtxid, peer, preferred, reqtime, m_current_sequence);
+        auto it = m_index.get<ByTxHash>().lower_bound(ByTxHashView{txhash, State::CANDIDATE_DELAYED, 0});
+        auto first_inv_time = (it != m_index.get<ByTxHash>().end() && it->m_txhash == txhash) ? it->m_first_inv_time : recvtime;
+        auto ret = m_index.get<ByPeer>().emplace(gtxid, peer, preferred, first_inv_time, recvtime+delay, m_current_sequence);
         if (!ret.second) return;
 
         // Update accounting metadata.
@@ -739,9 +744,9 @@ void TxRequestTracker::PostGetRequestableSanityCheck(std::chrono::microseconds n
 }
 
 void TxRequestTracker::ReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred,
-    std::chrono::microseconds reqtime)
+    std::chrono::microseconds recvtime, std::chrono::microseconds delay)
 {
-    m_impl->ReceivedInv(peer, gtxid, preferred, reqtime);
+    m_impl->ReceivedInv(peer, gtxid, preferred, recvtime, delay);
 }
 
 void TxRequestTracker::RequestedTx(NodeId peer, const uint256& txhash, std::chrono::microseconds expiry)
