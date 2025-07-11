@@ -348,7 +348,19 @@ static RPCHelpMan getrawtransaction()
     }
 
     uint256 hash_block;
-    const CTransactionRef tx = GetTransaction(blockindex, node.mempool.get(), hash, hash_block, chainman.m_blockman);
+    int64_t first_seen{0};
+    int64_t first_heard_of{0};
+    CTransactionRef tx{nullptr};
+    if (verbosity == 1 && node.mempool && !blockindex) {
+        auto entry = WITH_LOCK(node.mempool->cs, return node.mempool->GetEntry(Txid::FromUint256(hash)));
+        first_seen = entry->GetTime().count();
+        // FIXME: Update with actual first heard of time
+        first_heard_of = entry->GetTime().count();
+        tx = entry->GetSharedTx();
+    } else {
+        tx = GetTransaction(blockindex, node.mempool.get(), hash, hash_block, chainman.m_blockman);
+    }
+
     if (!tx) {
         std::string errmsg;
         if (blockindex) {
@@ -383,6 +395,9 @@ static RPCHelpMan getrawtransaction()
     }
     if (verbosity == 1) {
         TxToJSON(*tx, hash_block, result, chainman.ActiveChainstate());
+        result.pushKV("first_seen", first_seen);
+        result.pushKV("first_heard_of", first_heard_of);
+
         return result;
     }
 
