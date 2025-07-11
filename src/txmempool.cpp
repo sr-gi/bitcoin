@@ -1407,7 +1407,8 @@ CTxMemPool::ChangeSet::TxHandle CTxMemPool::ChangeSet::StageAddition(const CTran
 {
     LOCK(m_pool->cs);
     Assume(m_to_add.find(tx->GetHash()) == m_to_add.end());
-    auto newit = m_to_add.emplace(tx, fee, time, entry_height, entry_sequence, spends_coinbase, sigops_cost, lp).first;
+    // FIXME: Update first_heard_of_time
+    auto newit = m_to_add.emplace(tx, fee, time, time, entry_height, entry_sequence, spends_coinbase, sigops_cost, lp).first;
     CAmount delta{0};
     m_pool->ApplyDelta(tx->GetHash(), delta);
     if (delta) m_to_add.modify(newit, [&delta](CTxMemPoolEntry& e) { e.UpdateModifiedFee(delta); });

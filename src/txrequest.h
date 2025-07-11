@@ -133,7 +133,7 @@ public:
      * from the specified gtxid.
      */
     void ReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred,
-        std::chrono::microseconds reqtime);
+        std::chrono::microseconds recvtime, std::chrono::microseconds delay);
 
     /** Deletes all announcements for a given peer.
      *
