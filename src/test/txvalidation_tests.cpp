@@ -40,7 +40,7 @@ BOOST_FIXTURE_TEST_CASE(tx_mempool_reject_coinbase, TestChain100Setup)
     LOCK(cs_main);
 
     unsigned int initialPoolSize = m_node.mempool->size();
-    const MempoolAcceptResult result = m_node.chainman->ProcessTransaction(MakeTransactionRef(coinbaseTx));
+    const MempoolAcceptResult result = m_node.chainman->ProcessTransaction(MakeTransactionRef(coinbaseTx), /*first_announcement_time=*/{});
 
     BOOST_CHECK(result.m_result_type == MempoolAcceptResult::ResultType::INVALID);
 

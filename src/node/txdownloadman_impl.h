@@ -185,6 +185,8 @@ public:
     bool HaveMoreWork(NodeId nodeid);
     CTransactionRef GetTxToReconsider(NodeId nodeid);
 
+    std::optional<int64_t> GetFirstAnnouncementTime(const uint256& txhash);
+
     void CheckIsEmpty();
     void CheckIsEmpty(NodeId nodeid);
 

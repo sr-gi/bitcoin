@@ -82,6 +82,7 @@ private:
     const CAmount nFee;             //!< Cached to avoid expensive parent-transaction lookups
     const int32_t nTxWeight;         //!< ... and avoid recomputing tx weight (also used for GetTxSize())
     const size_t nUsageSize;        //!< ... and total memory usage
+    const int64_t nFirstInvTime;    //!< First time we heard of this transaction
     const int64_t nTime;            //!< Local time when entering the mempool
     const uint64_t entry_sequence;  //!< Sequence number used to determine whether this transaction is too recent for relay
     const unsigned int entryHeight; //!< Chain height when entering the mempool
@@ -106,7 +107,7 @@ private:
     int64_t nSigOpCostWithAncestors;
 
 public:
-    CTxMemPoolEntry(const CTransactionRef& tx, CAmount fee,
+    CTxMemPoolEntry(const CTransactionRef& tx, CAmount fee, int64_t first_inv_time,
                     int64_t time, unsigned int entry_height, uint64_t entry_sequence,
                     bool spends_coinbase,
                     int64_t sigops_cost, LockPoints lp)
@@ -114,6 +115,7 @@ public:
           nFee{fee},
           nTxWeight{GetTransactionWeight(*tx)},
           nUsageSize{RecursiveDynamicUsage(tx)},
+          nFirstInvTime{first_inv_time},
           nTime{time},
           entry_sequence{entry_sequence},
           entryHeight{entry_height},
@@ -143,6 +145,8 @@ public:
     }
     int32_t GetTxWeight() const { return nTxWeight; }
     std::chrono::seconds GetTime() const { return duration_cast<std::chrono::seconds>(std::chrono::microseconds{nTime}); }
+    std::chrono::microseconds GetTimeUs() const { return std::chrono::microseconds{nTime}; }
+    std::chrono::microseconds GetFirstInvTime() const { return std::chrono::microseconds{nFirstInvTime}; }
     unsigned int GetHeight() const { return entryHeight; }
     uint64_t GetSequence() const { return entry_sequence; }
     int64_t GetSigOpCost() const { return sigOpCost; }

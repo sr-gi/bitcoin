@@ -222,7 +222,7 @@ BOOST_AUTO_TEST_CASE(package_validation_tests)
                                                    /*output_amount=*/CAmount(48 * COIN), /*submit=*/false);
     CTransactionRef tx_child = MakeTransactionRef(mtx_child);
     Package package_parent_child{tx_parent, tx_child};
-    const auto result_parent_child = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_parent_child, /*test_accept=*/true, /*client_maxfeerate=*/{});
+    const auto result_parent_child = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_parent_child, /*first_announcement_time=*/{}, /*test_accept=*/true, /*client_maxfeerate=*/{});
     if (auto err_parent_child{CheckPackageMempoolAcceptResult(package_parent_child, result_parent_child, /*expect_valid=*/true, nullptr)}) {
         BOOST_ERROR(err_parent_child.value());
     } else {
@@ -241,7 +241,7 @@ BOOST_AUTO_TEST_CASE(package_validation_tests)
     CTransactionRef giant_ptx = create_placeholder_tx(999, 999);
     BOOST_CHECK(GetVirtualTransactionSize(*giant_ptx) > DEFAULT_ANCESTOR_SIZE_LIMIT_KVB * 1000);
     Package package_single_giant{giant_ptx};
-    auto result_single_large = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_single_giant, /*test_accept=*/true, /*client_maxfeerate=*/{});
+    auto result_single_large = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_single_giant, /*first_announcement_time=*/{}, /*test_accept=*/true, /*client_maxfeerate=*/{});
     if (auto err_single_large{CheckPackageMempoolAcceptResult(package_single_giant, result_single_large, /*expect_valid=*/false, nullptr)}) {
         BOOST_ERROR(err_single_large.value());
     } else {
@@ -370,7 +370,7 @@ BOOST_AUTO_TEST_CASE(package_submission_tests)
         package_unrelated.emplace_back(MakeTransactionRef(mtx));
     }
     auto result_unrelated_submit = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                     package_unrelated, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                     package_unrelated, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
     // We don't expect m_tx_results for each transaction when basic sanity checks haven't passed.
     BOOST_CHECK(result_unrelated_submit.m_state.IsInvalid());
     BOOST_CHECK_EQUAL(result_unrelated_submit.m_state.GetResult(), PackageValidationResult::PCKG_POLICY);
@@ -410,7 +410,7 @@ BOOST_AUTO_TEST_CASE(package_submission_tests)
     // 3 Generations is not allowed.
     {
         auto result_3gen_submit = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                    package_3gen, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                    package_3gen, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
         BOOST_CHECK(result_3gen_submit.m_state.IsInvalid());
         BOOST_CHECK_EQUAL(result_3gen_submit.m_state.GetResult(), PackageValidationResult::PCKG_POLICY);
         BOOST_CHECK_EQUAL(result_3gen_submit.m_state.GetRejectReason(), "package-not-child-with-parents");
@@ -427,7 +427,7 @@ BOOST_AUTO_TEST_CASE(package_submission_tests)
         CTransactionRef tx_parent_invalid = MakeTransactionRef(mtx_parent_invalid);
         Package package_invalid_parent{tx_parent_invalid, tx_child};
         auto result_quit_early = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                   package_invalid_parent, /*test_accept=*/ false, /*client_maxfeerate=*/{});
+                                                   package_invalid_parent, /*first_announcement_time=*/{}, /*test_accept=*/ false, /*client_maxfeerate=*/{});
         if (auto err_parent_invalid{CheckPackageMempoolAcceptResult(package_invalid_parent, result_quit_early, /*expect_valid=*/false, m_node.mempool.get())}) {
             BOOST_ERROR(err_parent_invalid.value());
         } else {
@@ -448,7 +448,7 @@ BOOST_AUTO_TEST_CASE(package_submission_tests)
     package_missing_parent.push_back(MakeTransactionRef(mtx_child));
     {
         const auto result_missing_parent = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                             package_missing_parent, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                             package_missing_parent, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
         BOOST_CHECK(result_missing_parent.m_state.IsInvalid());
         BOOST_CHECK_EQUAL(result_missing_parent.m_state.GetResult(), PackageValidationResult::PCKG_POLICY);
         BOOST_CHECK_EQUAL(result_missing_parent.m_state.GetRejectReason(), "package-not-child-with-unconfirmed-parents");
@@ -458,7 +458,7 @@ BOOST_AUTO_TEST_CASE(package_submission_tests)
     // Submit package with parent + child.
     {
         const auto submit_parent_child = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                           package_parent_child, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                           package_parent_child, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
         expected_pool_size += 2;
         BOOST_CHECK_MESSAGE(submit_parent_child.m_state.IsValid(),
                             "Package validation unexpectedly failed: " << submit_parent_child.m_state.GetRejectReason());
@@ -480,7 +480,7 @@ BOOST_AUTO_TEST_CASE(package_submission_tests)
     // Already-in-mempool transactions should be detected and de-duplicated.
     {
         const auto submit_deduped = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                      package_parent_child, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                      package_parent_child, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
         if (auto err_deduped{CheckPackageMempoolAcceptResult(package_parent_child, submit_deduped, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_deduped.value());
         } else {
@@ -514,7 +514,7 @@ BOOST_AUTO_TEST_CASE(package_single_tx)
     CTransactionRef tx_single = MakeTransactionRef(mtx_single);
     Package package_tx_single{tx_single};
     const auto result_single_tx = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                    package_tx_single, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                    package_tx_single, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
     expected_pool_size += 1;
     BOOST_CHECK_MESSAGE(result_single_tx.m_state.IsValid(),
                         "Package validation unexpectedly failed: " << result_single_tx.m_state.ToString());
@@ -529,7 +529,7 @@ BOOST_AUTO_TEST_CASE(package_single_tx)
                                                     /*output_amount=*/CAmount(50 * COIN) - high_fee, /*submit=*/false);
     CTransactionRef tx_parent = MakeTransactionRef(mtx_parent);
     Package package_just_parent{tx_parent};
-    const auto result_just_parent = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_just_parent, /*test_accept=*/false, /*client_maxfeerate=*/{});
+    const auto result_just_parent = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_just_parent, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
     if (auto err_parent_child{CheckPackageMempoolAcceptResult(package_just_parent, result_just_parent, /*expect_valid=*/true, nullptr)}) {
         BOOST_ERROR(err_parent_child.value());
     } else {
@@ -550,7 +550,7 @@ BOOST_AUTO_TEST_CASE(package_single_tx)
                                                    /*output_amount=*/CAmount(50 * COIN) - 2 * high_fee, /*submit=*/false);
     CTransactionRef tx_child = MakeTransactionRef(mtx_child);
     Package package_just_child{tx_child};
-    const auto result_just_child = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_just_child, /*test_accept=*/false, /*client_maxfeerate=*/{});
+    const auto result_just_child = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_just_child, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
     if (auto err_parent_child{CheckPackageMempoolAcceptResult(package_just_child, result_just_child, /*expect_valid=*/true, nullptr)}) {
         BOOST_ERROR(err_parent_child.value());
     } else {
@@ -571,7 +571,7 @@ BOOST_AUTO_TEST_CASE(package_single_tx)
     CTransactionRef tx_single_low_fee = MakeTransactionRef(mtx_single_low_fee);
     Package package_tx_single_low_fee{tx_single_low_fee};
     const auto result_single_tx_low_fee = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                    package_tx_single_low_fee, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                    package_tx_single_low_fee, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
 
     BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 
@@ -644,7 +644,7 @@ BOOST_AUTO_TEST_CASE(package_witness_swap_tests)
     {
         Package package_parent_child1{ptx_parent, ptx_child1};
         const auto submit_witness1 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                       package_parent_child1, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                       package_parent_child1, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
         if (auto err_witness1{CheckPackageMempoolAcceptResult(package_parent_child1, submit_witness1, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_witness1.value());
         }
@@ -652,7 +652,7 @@ BOOST_AUTO_TEST_CASE(package_witness_swap_tests)
         // Child2 would have been validated individually.
         Package package_parent_child2{ptx_parent, ptx_child2};
         const auto submit_witness2 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                       package_parent_child2, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                       package_parent_child2, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
         if (auto err_witness2{CheckPackageMempoolAcceptResult(package_parent_child2, submit_witness2, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_witness2.value());
         } else {
@@ -666,7 +666,7 @@ BOOST_AUTO_TEST_CASE(package_witness_swap_tests)
         // Deduplication should work when wtxid != txid. Submit package with the already-in-mempool
         // transactions again, which should not fail.
         const auto submit_segwit_dedup = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                           package_parent_child1, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                           package_parent_child1, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
         if (auto err_segwit_dedup{CheckPackageMempoolAcceptResult(package_parent_child1, submit_segwit_dedup, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_segwit_dedup.value());
         } else {
@@ -697,7 +697,7 @@ BOOST_AUTO_TEST_CASE(package_witness_swap_tests)
     {
         Package package_child2_grandchild{ptx_child2, ptx_grandchild};
         const auto submit_spend_ignored = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                            package_child2_grandchild, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                            package_child2_grandchild, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
         if (auto err_spend_ignored{CheckPackageMempoolAcceptResult(package_child2_grandchild, submit_spend_ignored, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_spend_ignored.value());
         } else {
@@ -760,7 +760,7 @@ BOOST_AUTO_TEST_CASE(package_witness_swap_tests)
     CTransactionRef ptx_parent2_v1 = MakeTransactionRef(mtx_parent2_v1);
     CTransactionRef ptx_parent2_v2 = MakeTransactionRef(mtx_parent2_v2);
     // Put parent2_v1 in the package, submit parent2_v2 to the mempool.
-    const MempoolAcceptResult parent2_v2_result = m_node.chainman->ProcessTransaction(ptx_parent2_v2);
+    const MempoolAcceptResult parent2_v2_result = m_node.chainman->ProcessTransaction(ptx_parent2_v2, /*first_announcement_time=*/{});
     BOOST_CHECK(parent2_v2_result.m_result_type == MempoolAcceptResult::ResultType::VALID);
     package_mixed.push_back(ptx_parent2_v1);
 
@@ -795,7 +795,7 @@ BOOST_AUTO_TEST_CASE(package_witness_swap_tests)
     // parent3 should be accepted
     // child should be accepted
     {
-        const auto mixed_result = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_mixed, false, /*client_maxfeerate=*/{});
+        const auto mixed_result = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_mixed, /*first_announcement_time=*/{}, false, /*client_maxfeerate=*/{});
         if (auto err_mixed{CheckPackageMempoolAcceptResult(package_mixed, mixed_result, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_mixed.value());
         } else {
@@ -859,7 +859,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
     {
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
         const auto submit_cpfp_deprio = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                   package_cpfp, /*test_accept=*/ false, /*client_maxfeerate=*/{});
+                                                   package_cpfp, /*first_announcement_time=*/{}, /*test_accept=*/ false, /*client_maxfeerate=*/{});
         if (auto err_cpfp_deprio{CheckPackageMempoolAcceptResult(package_cpfp, submit_cpfp_deprio, /*expect_valid=*/false, m_node.mempool.get())}) {
             BOOST_ERROR(err_cpfp_deprio.value());
         } else {
@@ -881,7 +881,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
     {
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
         const auto submit_cpfp = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                   package_cpfp, /*test_accept=*/ false, /*client_maxfeerate=*/{});
+                                                   package_cpfp, /*first_announcement_time=*/{}, /*test_accept=*/ false, /*client_maxfeerate=*/{});
         if (auto err_cpfp{CheckPackageMempoolAcceptResult(package_cpfp, submit_cpfp, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_cpfp.value());
         } else {
@@ -933,7 +933,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
     // Cheap package should fail for being too low fee.
     {
         const auto submit_package_too_low = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                   package_still_too_low, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                   package_still_too_low, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
         if (auto err_package_too_low{CheckPackageMempoolAcceptResult(package_still_too_low, submit_package_too_low, /*expect_valid=*/false, m_node.mempool.get())}) {
             BOOST_ERROR(err_package_too_low.value());
         } else {
@@ -959,7 +959,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
     // Now that the child's fees have "increased" by 1 BTC, the cheap package should succeed.
     {
         const auto submit_prioritised_package = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                                  package_still_too_low, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                                  package_still_too_low, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
         if (auto err_prioritised{CheckPackageMempoolAcceptResult(package_still_too_low, submit_prioritised_package, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_prioritised.value());
         } else {
@@ -1007,7 +1007,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
     {
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
         const auto submit_rich_parent = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                          package_rich_parent, /*test_accept=*/false, /*client_maxfeerate=*/{});
+                                                          package_rich_parent, /*first_announcement_time=*/{}, /*test_accept=*/false, /*client_maxfeerate=*/{});
         if (auto err_rich_parent{CheckPackageMempoolAcceptResult(package_rich_parent, submit_rich_parent, /*expect_valid=*/false, m_node.mempool.get())}) {
             BOOST_ERROR(err_rich_parent.value());
         } else {
@@ -1064,7 +1064,7 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
         package2.push_back(tx_child_2);
 
         LOCK(m_node.mempool->cs);
-        const auto submit1 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package1, /*test_accept=*/false, std::nullopt);
+        const auto submit1 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package1, /*first_announcement_time=*/{}, /*test_accept=*/false, std::nullopt);
         if (auto err_1{CheckPackageMempoolAcceptResult(package1, submit1, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_1.value());
         }
@@ -1077,7 +1077,7 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
         expected_pool_size += 2;
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 
-        const auto submit2 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package2, /*test_accept=*/false, std::nullopt);
+        const auto submit2 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package2, /*first_announcement_time=*/{}, /*test_accept=*/false, std::nullopt);
         if (auto err_2{CheckPackageMempoolAcceptResult(package2, submit2, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_2.value());
         }
@@ -1126,7 +1126,7 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
         // 1 parent paying 199sat, 1 child paying 1300sat.
         Package package3{tx_parent_3, tx_child_3};
 
-        const auto submit1 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package1, false, std::nullopt);
+        const auto submit1 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package1, /*first_announcement_time=*/{}, false, std::nullopt);
         if (auto err_1{CheckPackageMempoolAcceptResult(package1, submit1, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_1.value());
         }
@@ -1139,7 +1139,7 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
 
         // This replacement is actually not package rbf; the parent carries enough fees
         // to replace the entire package on its own.
-        const auto submit2 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package2, false, std::nullopt);
+        const auto submit2 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package2, /*first_announcement_time=*/{}, false, std::nullopt);
         if (auto err_2{CheckPackageMempoolAcceptResult(package2, submit2, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_2.value());
         }
@@ -1150,7 +1150,7 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 
         // Package RBF, in which the replacement transaction's child sponsors the fees to meet RBF feerate rules
-        const auto submit3 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package3, false, std::nullopt);
+        const auto submit3 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package3, /*first_announcement_time=*/{}, false, std::nullopt);
         if (auto err_3{CheckPackageMempoolAcceptResult(package3, submit3, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_3.value());
         }
@@ -1174,12 +1174,12 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
 
         // Finally, check that we can prioritise tx_child_1 to get package1 into the mempool.
         // It should not be possible to resubmit package1 and get it in without prioritisation.
-        const auto submit4 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package1, false, std::nullopt);
+        const auto submit4 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package1, /*first_announcement_time=*/{}, false, std::nullopt);
         if (auto err_4{CheckPackageMempoolAcceptResult(package1, submit4, /*expect_valid=*/false, m_node.mempool.get())}) {
             BOOST_ERROR(err_4.value());
         }
         m_node.mempool->PrioritiseTransaction(tx_child_1->GetHash(), 1363);
-        const auto submit5 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package1, false, std::nullopt);
+        const auto submit5 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package1, /*first_announcement_time=*/{}, false, std::nullopt);
         if (auto err_5{CheckPackageMempoolAcceptResult(package1, submit5, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_5.value());
         }

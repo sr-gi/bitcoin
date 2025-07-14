@@ -254,18 +254,21 @@ struct PackageMempoolAcceptResult
  * Try to add a transaction to the mempool. This is an internal function and is exposed only for testing.
  * Client code should use ChainstateManager::ProcessTransaction()
  *
- * @param[in]  active_chainstate  Reference to the active chainstate.
- * @param[in]  tx                 The transaction to submit for mempool acceptance.
- * @param[in]  accept_time        The timestamp for adding the transaction to the mempool.
- *                                It is also used to determine when the entry expires.
- * @param[in]  bypass_limits      When true, don't enforce mempool fee and capacity limits,
- *                                and set entry_sequence to zero.
- * @param[in]  test_accept        When true, run validation checks but don't submit to mempool.
+ * @param[in]  active_chainstate        Reference to the active chainstate.
+ * @param[in]  tx                       The transaction to submit for mempool acceptance.
+ * @param[in]  accept_time              The timestamp for adding the transaction to the mempool.
+ *                                      It is also used to determine when the entry expires.
+ * @param[in]  first_announcement_time  The timestamp where we first heard of this transaction.
+ *                                      matches accept_time for transaction created by us or loaded
+ *                                      from disk.
+ * @param[in]  bypass_limits            When true, don't enforce mempool fee and capacity limits,
+ *                                      and set entry_sequence to zero.
+ * @param[in]  test_accept              When true, run validation checks but don't submit to mempool.
  *
  * @returns a MempoolAcceptResult indicating whether the transaction was accepted/rejected with reason.
  */
-MempoolAcceptResult AcceptToMemoryPool(Chainstate& active_chainstate, const CTransactionRef& tx,
-                                       int64_t accept_time, bool bypass_limits, bool test_accept)
+MempoolAcceptResult AcceptToMemoryPool(Chainstate& active_chainstate, const CTransactionRef& tx, int64_t accept_time,
+                                       int64_t first_announcement_time, bool bypass_limits, bool test_accept)
     EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 /**
@@ -278,9 +281,10 @@ MempoolAcceptResult AcceptToMemoryPool(Chainstate& active_chainstate, const CTra
 * If a transaction fails, validation will exit early and some results may be missing. It is also
 * possible for the package to be partially submitted.
 */
-PackageMempoolAcceptResult ProcessNewPackage(Chainstate& active_chainstate, CTxMemPool& pool,
-                                                   const Package& txns, bool test_accept, const std::optional<CFeeRate>& client_maxfeerate)
-                                                   EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+PackageMempoolAcceptResult ProcessNewPackage(Chainstate& active_chainstate, CTxMemPool& pool,  const Package& txns,
+                                             std::optional<int64_t> first_announcement_time, bool test_accept,
+                                             const std::optional<CFeeRate>& client_maxfeerate)
+    EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 /* Mempool validation helper functions */
 
@@ -1243,10 +1247,11 @@ public:
     /**
      * Try to add a transaction to the memory pool.
      *
-     * @param[in]  tx              The transaction to submit for mempool acceptance.
-     * @param[in]  test_accept     When true, run validation checks but don't submit to mempool.
+     * @param[in]  tx                          The transaction to submit for mempool acceptance.
+     * @param[in]  first_announcement_time     The timestime of the first announcement received about this transaciton, if any.
+     * @param[in]  test_accept                 When true, run validation checks but don't submit to mempool.
      */
-    [[nodiscard]] MempoolAcceptResult ProcessTransaction(const CTransactionRef& tx, bool test_accept=false)
+    [[nodiscard]] MempoolAcceptResult ProcessTransaction(const CTransactionRef& tx, std::optional<int64_t> first_announcement_time, bool test_accept=false)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     //! Load the block tree and coins database from disk, initializing state if we're running with -reindex

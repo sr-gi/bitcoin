@@ -313,9 +313,10 @@ void Chainstate::MaybeUpdateMempoolForReorg(
         const auto queuedTx = disconnectpool.take();
         auto it = queuedTx.rbegin();
         while (it != queuedTx.rend()) {
+            auto t = GetTime<std::chrono::microseconds>().count();
             // ignore validation errors in resurrected transactions
             if (!fAddToMempool || (*it)->IsCoinBase() ||
-                AcceptToMemoryPool(*this, *it, GetTime<std::chrono::microseconds>().count(),
+                AcceptToMemoryPool(*this, *it, t, t,
                     /*bypass_limits=*/true, /*test_accept=*/false).m_result_type !=
                         MempoolAcceptResult::ResultType::VALID) {
                 // If the transaction doesn't make it in to the mempool, remove any
@@ -452,6 +453,7 @@ public:
     struct ATMPArgs {
         const CChainParams& m_chainparams;
         const int64_t m_accept_time;
+        const int64_t m_first_announcement_time;
         const bool m_bypass_limits;
         /*
          * Return any outpoints which were not previously present in the coins
@@ -489,10 +491,11 @@ public:
 
         /** Parameters for single transaction mempool validation. */
         static ATMPArgs SingleAccept(const CChainParams& chainparams, int64_t accept_time,
-                                     bool bypass_limits, std::vector<COutPoint>& coins_to_uncache,
-                                     bool test_accept) {
+                                     int64_t first_announcement_time, bool bypass_limits,
+                                     std::vector<COutPoint>& coins_to_uncache, bool test_accept) {
             return ATMPArgs{/* m_chainparams */ chainparams,
                             /* m_accept_time */ accept_time,
+                            /* m_first_announcement_time*/ first_announcement_time,
                             /* m_bypass_limits */ bypass_limits,
                             /* m_coins_to_uncache */ coins_to_uncache,
                             /* m_test_accept */ test_accept,
@@ -507,9 +510,10 @@ public:
 
         /** Parameters for test package mempool validation through testmempoolaccept. */
         static ATMPArgs PackageTestAccept(const CChainParams& chainparams, int64_t accept_time,
-                                          std::vector<COutPoint>& coins_to_uncache) {
+                                          int64_t first_announcement_time, std::vector<COutPoint>& coins_to_uncache) {
             return ATMPArgs{/* m_chainparams */ chainparams,
                             /* m_accept_time */ accept_time,
+                            /* m_first_announcement_time*/ first_announcement_time,
                             /* m_bypass_limits */ false,
                             /* m_coins_to_uncache */ coins_to_uncache,
                             /* m_test_accept */ true,
@@ -523,10 +527,11 @@ public:
         }
 
         /** Parameters for child-with-unconfirmed-parents package validation. */
-        static ATMPArgs PackageChildWithParents(const CChainParams& chainparams, int64_t accept_time,
+        static ATMPArgs PackageChildWithParents(const CChainParams& chainparams, int64_t accept_time, int64_t first_announcement_time,
                                                 std::vector<COutPoint>& coins_to_uncache, const std::optional<CFeeRate>& client_maxfeerate) {
             return ATMPArgs{/* m_chainparams */ chainparams,
                             /* m_accept_time */ accept_time,
+                            /* m_first_announcement_time*/ first_announcement_time,
                             /* m_bypass_limits */ false,
                             /* m_coins_to_uncache */ coins_to_uncache,
                             /* m_test_accept */ false,
@@ -543,6 +548,7 @@ public:
         static ATMPArgs SingleInPackageAccept(const ATMPArgs& package_args) {
             return ATMPArgs{/* m_chainparams */ package_args.m_chainparams,
                             /* m_accept_time */ package_args.m_accept_time,
+                            /* m_first_announcement_time*/ package_args.m_first_announcement_time,
                             /* m_bypass_limits */ false,
                             /* m_coins_to_uncache */ package_args.m_coins_to_uncache,
                             /* m_test_accept */ package_args.m_test_accept,
@@ -560,6 +566,7 @@ public:
         // mixing up the order of the arguments. Use static functions above instead.
         ATMPArgs(const CChainParams& chainparams,
                  int64_t accept_time,
+                 int64_t first_announcement_time,
                  bool bypass_limits,
                  std::vector<COutPoint>& coins_to_uncache,
                  bool test_accept,
@@ -571,6 +578,7 @@ public:
                  bool allow_carveouts)
             : m_chainparams{chainparams},
               m_accept_time{accept_time},
+              m_first_announcement_time{first_announcement_time},
               m_bypass_limits{bypass_limits},
               m_coins_to_uncache{coins_to_uncache},
               m_test_accept{test_accept},
@@ -1877,8 +1885,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
 
 } // anon namespace
 
-MempoolAcceptResult AcceptToMemoryPool(Chainstate& active_chainstate, const CTransactionRef& tx,
-                                       int64_t accept_time, bool bypass_limits, bool test_accept)
+MempoolAcceptResult AcceptToMemoryPool(Chainstate& active_chainstate, const CTransactionRef& tx, int64_t accept_time,
+                                       int64_t first_announcement_time, bool bypass_limits, bool test_accept)
 {
     AssertLockHeld(::cs_main);
     const CChainParams& chainparams{active_chainstate.m_chainman.GetParams()};
@@ -1886,7 +1894,7 @@ MempoolAcceptResult AcceptToMemoryPool(Chainstate& active_chainstate, const CTra
     CTxMemPool& pool{*active_chainstate.GetMempool()};
 
     std::vector<COutPoint> coins_to_uncache;
-    auto args = MemPoolAccept::ATMPArgs::SingleAccept(chainparams, accept_time, bypass_limits, coins_to_uncache, test_accept);
+    auto args = MemPoolAccept::ATMPArgs::SingleAccept(chainparams, accept_time, first_announcement_time, bypass_limits, coins_to_uncache, test_accept);
     MempoolAcceptResult result = MemPoolAccept(pool, active_chainstate).AcceptSingleTransaction(tx, args);
     if (result.m_result_type != MempoolAcceptResult::ResultType::VALID) {
         // Remove coins that were not present in the coins cache before calling
@@ -1907,8 +1915,8 @@ MempoolAcceptResult AcceptToMemoryPool(Chainstate& active_chainstate, const CTra
     return result;
 }
 
-PackageMempoolAcceptResult ProcessNewPackage(Chainstate& active_chainstate, CTxMemPool& pool,
-                                                   const Package& package, bool test_accept, const std::optional<CFeeRate>& client_maxfeerate)
+PackageMempoolAcceptResult ProcessNewPackage(Chainstate& active_chainstate, CTxMemPool& pool, const Package& package, std::optional<int64_t> first_announcement_time,
+                                                bool test_accept, const std::optional<CFeeRate>& client_maxfeerate)
 {
     AssertLockHeld(cs_main);
     assert(!package.empty());
@@ -1918,11 +1926,12 @@ PackageMempoolAcceptResult ProcessNewPackage(Chainstate& active_chainstate, CTxM
     const CChainParams& chainparams = active_chainstate.m_chainman.GetParams();
     auto result = [&]() EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
         AssertLockHeld(cs_main);
+        auto accept_time = GetTime<std::chrono::microseconds>().count();
         if (test_accept) {
-            auto args = MemPoolAccept::ATMPArgs::PackageTestAccept(chainparams, GetTime<std::chrono::microseconds>().count(), coins_to_uncache);
+            auto args = MemPoolAccept::ATMPArgs::PackageTestAccept(chainparams, accept_time, first_announcement_time.value_or(accept_time), coins_to_uncache);
             return MemPoolAccept(pool, active_chainstate).AcceptMultipleTransactions(package, args);
         } else {
-            auto args = MemPoolAccept::ATMPArgs::PackageChildWithParents(chainparams, GetTime<std::chrono::microseconds>().count(), coins_to_uncache, client_maxfeerate);
+            auto args = MemPoolAccept::ATMPArgs::PackageChildWithParents(chainparams, accept_time, first_announcement_time.value_or(accept_time), coins_to_uncache, client_maxfeerate);
             return MemPoolAccept(pool, active_chainstate).AcceptPackage(package, args);
         }
     }();
@@ -4586,7 +4595,7 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
     return true;
 }
 
-MempoolAcceptResult ChainstateManager::ProcessTransaction(const CTransactionRef& tx, bool test_accept)
+MempoolAcceptResult ChainstateManager::ProcessTransaction(const CTransactionRef& tx, std::optional<std::int64_t> first_announcement_time, bool test_accept)
 {
     AssertLockHeld(cs_main);
     Chainstate& active_chainstate = ActiveChainstate();
@@ -4595,7 +4604,8 @@ MempoolAcceptResult ChainstateManager::ProcessTransaction(const CTransactionRef&
         state.Invalid(TxValidationResult::TX_NO_MEMPOOL, "no-mempool");
         return MempoolAcceptResult::Failure(state);
     }
-    auto result = AcceptToMemoryPool(active_chainstate, tx, GetTime<std::chrono::microseconds>().count(), /*bypass_limits=*/ false, test_accept);
+    auto accept_time = GetTime<std::chrono::microseconds>().count();
+    auto result = AcceptToMemoryPool(active_chainstate, tx, accept_time, first_announcement_time.value_or(accept_time), /*bypass_limits=*/ false, test_accept);
     active_chainstate.GetMempool()->check(active_chainstate.CoinsTip(), active_chainstate.m_chain.Height() + 1);
     return result;
 }

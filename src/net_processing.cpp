@@ -3123,7 +3123,8 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
     CTransactionRef porphanTx = nullptr;
 
     while (CTransactionRef porphanTx = m_txdownloadman.GetTxToReconsider(peer.m_id)) {
-        const MempoolAcceptResult result = m_chainman.ProcessTransaction(porphanTx);
+        auto first_announcement_time = m_txdownloadman.GetFirstAnnouncementTime(porphanTx->GetWitnessHash().ToUint256());
+        const MempoolAcceptResult result = m_chainman.ProcessTransaction(porphanTx, first_announcement_time);
         const TxValidationState& state = result.m_state;
         const Txid& orphanHash = porphanTx->GetHash();
         const Wtxid& orphan_wtxid = porphanTx->GetWitnessHash();
@@ -4289,6 +4290,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         LOCK2(cs_main, m_tx_download_mutex);
 
         const auto& [should_validate, package_to_validate] = m_txdownloadman.ReceivedTx(pfrom.GetId(), ptx);
+        auto first_announcement_time = m_txdownloadman.GetFirstAnnouncementTime(ptx->GetWitnessHash().ToUint256());
         if (!should_validate) {
             if (pfrom.HasPermission(NetPermissionFlags::ForceRelay)) {
                 // Always relay transactions received from peers with forcerelay
@@ -4305,7 +4307,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             }
 
             if (package_to_validate) {
-                const auto package_result{ProcessNewPackage(m_chainman.ActiveChainstate(), m_mempool, package_to_validate->m_txns, /*test_accept=*/false, /*client_maxfeerate=*/std::nullopt)};
+                const auto package_result{ProcessNewPackage(m_chainman.ActiveChainstate(), m_mempool, package_to_validate->m_txns, first_announcement_time, /*test_accept=*/false, /*client_maxfeerate=*/std::nullopt)};
                 LogDebug(BCLog::TXPACKAGES, "package evaluation for %s: %s\n", package_to_validate->ToString(),
                          package_result.m_state.IsValid() ? "package accepted" : "package rejected");
                 ProcessPackageResult(package_to_validate.value(), package_result);
@@ -4316,7 +4318,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         // ReceivedTx should not be telling us to validate the tx and a package.
         Assume(!package_to_validate.has_value());
 
-        const MempoolAcceptResult result = m_chainman.ProcessTransaction(ptx);
+        const MempoolAcceptResult result = m_chainman.ProcessTransaction(ptx, first_announcement_time);
         const TxValidationState& state = result.m_state;
 
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
@@ -4325,7 +4327,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         }
         if (state.IsInvalid()) {
             if (auto package_to_validate{ProcessInvalidTx(pfrom.GetId(), ptx, state, /*first_time_failure=*/true)}) {
-                const auto package_result{ProcessNewPackage(m_chainman.ActiveChainstate(), m_mempool, package_to_validate->m_txns, /*test_accept=*/false, /*client_maxfeerate=*/std::nullopt)};
+                const auto package_result{ProcessNewPackage(m_chainman.ActiveChainstate(), m_mempool, package_to_validate->m_txns, first_announcement_time, /*test_accept=*/false, /*client_maxfeerate=*/std::nullopt)};
                 LogDebug(BCLog::TXPACKAGES, "package evaluation for %s: %s\n", package_to_validate->ToString(),
                          package_result.m_state.IsValid() ? "package accepted" : "package rejected");
                 ProcessPackageResult(package_to_validate.value(), package_result);
