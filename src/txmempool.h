@@ -217,6 +217,12 @@ struct TxMempoolInfo
     /** Time the transaction entered the mempool. */
     std::chrono::seconds m_time;
 
+    /** Time the transaction entered the mempool, in microseconds. */
+    std::chrono::microseconds m_time_us;
+
+    /** Time of the first announcement receive for this transaction, in microseconds. */
+    std::optional<std::chrono::microseconds> m_first_inv_time;
+
     /** Fee of the transaction. */
     CAmount fee;
 
