@@ -3536,9 +3536,11 @@ bool PeerManagerImpl::AnnounceTxs(std::vector<Wtxid> remote_missing_wtxids, CNod
         remote_missing_wtxids.pop_back();
         auto txinfo = m_mempool.info(wtxid);
         if (!ShouldSendTransaction(peer, txinfo, tx_relay, filterrate)) {
+            LogPrintLevel(BCLog::TXRECONCILIATION, BCLog::Level::Debug, "Not sending %d to peer=%d since it has hit one of out filters\n", wtxid.ToString(), pto.GetId());
             continue;
         }
 
+        LogPrintLevel(BCLog::TXRECONCILIATION, BCLog::Level::Debug, "Adding %d to inmediate INV message for peer=%d\n", wtxid.ToString(), pto.GetId());
         tx_relay->m_tx_inventory_known_filter.insert(wtxid.ToUint256());
         remote_missing_invs.emplace_back(MSG_WTX, wtxid.ToUint256());
         nRelayedTransactions++;
