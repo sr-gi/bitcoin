@@ -6,15 +6,11 @@
 #define BITCOIN_NODE_TXRECONCILIATION_H
 
 #include <net.h>
-#include <sync.h>
+#include <util/hasher.h>
 
-#include <memory>
-#include <tuple>
-#include <optional>
+class Minisketch;
 
-/** Supported transaction reconciliation protocol version */
-static constexpr uint32_t TXRECONCILIATION_VERSION{1};
-
+namespace node {
 /**
  * A floating point coefficient q for estimating reconciliation set difference, and
  * the value used to convert it to integer for transmission purposes, as specified in BIP-330.
@@ -24,248 +20,203 @@ constexpr uint16_t Q_PRECISION{(2 << 14) - 1};
 
 /** The size of the field, used to compute sketches to reconcile transactions (see BIP-330). */
 constexpr unsigned int RECON_FIELD_SIZE = 32;
-/**
- * Allows to infer capacity of a reconciliation sketch based on it's char[] representation,
- * which is necessary to deserealize a received sketch.
- */
-constexpr unsigned int BYTES_PER_SKETCH_CAPACITY = RECON_FIELD_SIZE / 8;
-/**
- * Limit sketch capacity to avoid DoS. This applies only to the original sketches,
- * and implies that extended sketches could be at most twice the size.
- */
-constexpr uint32_t MAX_SKETCH_CAPACITY = 2 << 12;
 
-/**
- * Maximum number of wtxids stored in a peer local set, bounded to protect the memory use of
- * reconciliation sets and short ids mappings, and CPU used for sketch computation.
- */
-constexpr size_t MAX_RECONSET_SIZE = 3000;
+/** Static salt component used to compute short txids for sketch construction, see BIP-330. */
+const std::string RECON_STATIC_SALT = "Tx Relay Salting";
+const HashWriter RECON_SALT_HASHER = TaggedHash(RECON_STATIC_SALT);
 
-/**
- * Interval for inbound peer fanout selection. The subset is rotated on a timer.
- */
-static constexpr auto INBOUND_FANOUT_ROTATION_INTERVAL{10min};
-
-/**
- * Interval between initiating reconciliations with peers.
- * This value allows to reconcile ~(7 tx/s * 8s) transactions during normal operation.
- * More frequent reconciliations would cause significant constant bandwidth overhead
- * due to reconciliation metadata (sketch sizes etc.), which would nullify the efficiency.
- * Less frequent reconciliations would introduce high transaction relay latency.
- */
-constexpr std::chrono::microseconds RECON_REQUEST_INTERVAL{8s};
-
-enum class ReconciliationRegisterResult {
-    NOT_FOUND,
-    SUCCESS,
-    ALREADY_REGISTERED,
-    PROTOCOL_VIOLATION,
+/** Represents phase of the current reconciliation round with a peer. */
+enum class ReconciliationPhase
+{
+    NONE,
+    INIT_REQUESTED,
+    INIT_RESPONDED,
+    EXT_REQUESTED,
+    EXT_RESPONDED
 };
 
-/**
- * Record whether or not a wtxid was successfully added to a reconciliation set.
- * In case of failure, check whether this was due to a shortid collision and record
- * the colliding wtxid.
-*/
-class AddToSetResult
+/** Keeps track of txreconciliation-related per-peer state. */
+class TxReconciliationState
 {
-    public:
-        bool m_succeeded;
-        std::optional<Wtxid> m_collision;
-
-        explicit AddToSetResult(bool added, std::optional<Wtxid> conflict);
-        static AddToSetResult Succeeded();
-        static AddToSetResult Failed();
-        static AddToSetResult Collision(Wtxid);
-};
-
-/**
- * Transaction reconciliation is a way for nodes to efficiently announce transactions.
- * This object keeps track of all txreconciliation-related communications with the peers.
- * The high-level protocol is:
- * 0.  Txreconciliation protocol handshake.
- * 1.  Once we receive a new transaction, add it to the set instead of announcing immediately.
- * 2.  At regular intervals, a txreconciliation initiator requests a sketch from a peer, where a
- *     sketch is a compressed representation of short form IDs of the transactions in their set.
- * 3.  Once the initiator received a sketch from the peer, the initiator computes a local sketch,
- *     and combines the two sketches to attempt finding the difference in *sets*.
- * 4a. If the difference was not larger than estimated, see SUCCESS below.
- * 4b. If the difference was larger than estimated, initial txreconciliation fails. The initiator
- *     requests a larger sketch via an extension round (allowed only once).
- *     - If extension succeeds (a larger sketch is sufficient), see SUCCESS below.
- *     - If extension fails (a larger sketch is insufficient), see FAILURE below.
- *
- * SUCCESS. The initiator knows full symmetrical difference and can request what the initiator is
- *          missing and announce to the peer what the peer is missing.
- *
- * FAILURE. The initiator notifies the peer about the failure and announces all transactions from
- *          the corresponding set. Once the peer received the failure notification, the peer
- *          announces all transactions from their set.
-
- * This is a modification of the Erlay protocol (https://arxiv.org/abs/1905.10518) with two
- * changes (sketch extensions instead of bisections, and an extra INV exchange round), both
- * are motivated in BIP-330.
- */
-class TxReconciliationTracker
-{
-private:
-    class Impl;
-    const std::unique_ptr<Impl> m_impl;
-
 public:
-    explicit TxReconciliationTracker(uint32_t recon_version, double inbound_fanout_destinations_fraction, uint32_t outbound_fanout_threshold);
-    ~TxReconciliationTracker();
-
     /**
-     * Step 0. Generates initial part of the state (salt) required to reconcile txs with the peer.
-     * The salt is used for short ID computation required for txreconciliation.
-     * The function returns the salt.
-     * A peer can't participate in future txreconciliations without this call.
-     * This function must be called only once per peer.
+     * Reconciliation protocol assumes using one role consistently: either a reconciliation
+     * initiator (requesting sketches), or responder (sending sketches). This defines our role,
+     * based on the direction of the p2p connection.
      */
-    uint64_t PreRegisterPeer(NodeId peer_id);
+    bool m_we_initiate;
+
+    /** Keep track of the reconciliation phase with the peer. */
+    ReconciliationPhase m_phase{ReconciliationPhase::NONE};
 
     /**
-     * For testing purposes only. This SHOULD NEVER be used in production.
+     * Store all wtxids which we would announce to the peer (policy checks passed, etc.)
+     * in this set instead of announcing them right away. When reconciliation time comes, we will
+     * compute a compressed representation of this set ("sketch") and use it to efficiently
+     * reconcile this set with a set on the peer's side.
+     */
+    std::unordered_set<Wtxid, SaltedTxidHasher> m_local_set;
+
+    /**
+     * Reconciliation sketches are computed over short transaction IDs.
+     * This is a cache of these IDs enabling faster lookups of full wtxids,
+     * useful when the peer asks for missing transactions by short IDs
+     * at the end of a reconciliation round.
+     * We also use this to keep track of short ID collisions. In case of a
+     * collision, both transactions should be fanout.
+     */
+    std::map<uint32_t, Wtxid> m_short_id_mapping;
+
+    /**
+     * A reconciliation round may involve an extension, which is an extra exchange of messages.
+     * Since it may happen after a delay (at least network latency), new transactions may come
+     * during that time. To avoid mixing old and new transactions, those which are subject for
+     * extension of a current reconciliation round are moved to a reconciliation set snapshot
+     * after an initial (non-extended) sketch is sent.
+     * New transactions are kept in the regular reconciliation set.
+     */
+    std::unordered_set<Wtxid, SaltedTxidHasher> m_local_set_snapshot;
+
+    /** Same as non-snapshot set above, but for the transactions in the snapshot. */
+    std::map<uint32_t, Wtxid> m_short_id_mapping_snapshot;
+
+    /**
+     * A reconciliation round may involve an extension, in which case we should remember
+     * a capacity of the sketch sent out initially, so that a sketch extension is of the same size.
+     */
+    uint16_t m_capacity_snapshot{0};
+
+    /**
+     * A peer could announce a transaction to us during reconciliation and after we snapshotted
+     * the initial set. We can't remove this new transaction from the snapshot, because
+     * then we won't be able to compute a valid extension (for the sketch already transmitted).
+     * Instead, we just remember those transactions, and not filter them out when we announce
+     * data from the snapshot.
+     */
+    std::set<Wtxid> m_announced_while_reconciling;
+
+    /**
+     * In a reconciliation round initiated by us, if we asked for an extension, we want to store
+     * the sketch computed/transmitted in the initial step, so that we can use it when sketch extension arrives.
+     */
+    std::vector<uint8_t> m_remote_sketch_snapshot;
+
+    /**
+     * The following fields are specific to only reconciliations initiated by the peer.
+     */
+
+    /**
+     * The value transmitted from the peer with a reconciliation requests is stored here until
+     * we respond to that request with a sketch.
+     */
+    double m_remote_q;
+
+    /**
+     * A reconciliation request comes from a peer with a reconciliation set size from their side,
+     * which is supposed to help us to estimate set difference size. The value is stored here until
+     * we respond to that request with a sketch.
+     */
+    uint16_t m_remote_set_size;
+
+    TxReconciliationState(bool we_initiate, uint64_t k0, uint64_t k1) : m_we_initiate(we_initiate), m_k0(k0), m_k1(k1) {}
+
+    /**
+     * Reconciliation sketches are computed over short transaction IDs.
+     * Short IDs are salted with a link-specific constant value.
+     */
+    uint32_t ComputeShortID(const Wtxid& wtxid) const;
+
+    /**
+     * Check whether a given wtxid has a shortid collision with an existing transaction on the peer's reconciliation state.
+     * If a collision is found sets collision to the wtxid of the conflicting transaction.
     */
-    void PreRegisterPeerWithSalt(NodeId peer_id, uint64_t local_salt);
+    bool HasCollision( const Wtxid& wtxid, Wtxid& collision, uint32_t &short_id);
 
     /**
-     * Step 0. Once the peer agreed to reconcile txs with us, generate the state required to track
-     * ongoing reconciliations. Must be called only after pre-registering the peer and only once.
+     * Estimate a capacity of a sketch we will send or use locally (to find set difference) based on the local set size.
      */
-    ReconciliationRegisterResult RegisterPeer(NodeId peer_id, bool is_peer_inbound,
-                                              uint32_t peer_recon_version, uint64_t remote_salt);
+    uint32_t EstimateSketchCapacity(size_t local_set_size) const;
 
     /**
-     * Step 1. Add a to-be-announced transaction to the local reconciliation set of the target peer.
-     * Returns false if the set is at capacity, or if the set contains a colliding transaction (alongside
-     * the colliding wtxid). Returns true if the transaction is added to the set (or if it was already in it).
+     * Reconciliation involves computing a space-efficient representation of transaction identifiers (a sketch).
+     * A sketch has a capacity meaning it allows reconciling at most a certain number of elements (see BIP-330).
      */
-    AddToSetResult AddToSet(NodeId peer_id, const Wtxid& wtxid);
+    Minisketch ComputeBaseSketch(uint32_t& capacity);
 
     /**
-     * Checks whether a transaction is part of the peer's reconciliation set.
+     * When our peer tells us that our sketch was insufficient to reconcile transactions because
+     * of the low capacity, we compute an extended sketch with the double capacity, and then send
+     * only missing part to that peer.
      */
-    bool IsTransactionInSet(NodeId peer_id, const Wtxid& wtxid);
+    Minisketch ComputeExtendedSketch(uint32_t extended_capacity);
 
     /**
-     * Before Step 2, we might want to remove a wtxid from the reconciliation set, for example if
-     * the peer just announced the transaction to us.
-     * Returns whether the wtxid was removed.
+     * Creates a snapshot of the peer local set (m_local_set and m_short_id_mapping) and clears
+     * it. This is useful for both sides of the reconciliation when preparing for an extension
+     * (request or response) so the current data can be persisted, and any additional data that
+     * enters the sets is not lost after the current reconciliation flow is concluded.
      */
-    bool TryRemovingFromSet(NodeId peer_id, const Wtxid& wtxid);
+    void SnapshotLocalSet();
+
+    /** Clears the peer's reconciliation state based on the initiator and during what phase this was called. */
+    void Clear();
 
     /**
-     * Returns whether it's time to initiate reconciliation (Step 2) with a given peer, based on:
-     * - time passed since the last reconciliation;
-     * - reconciliation queue;
-     * - whether previous reconciliations for the given peer were finalized.
+     * Be ready to respond to a extension request, to compute the extended sketch over
+     * the same initial set (without transactions received during the reconciliation).
+     * Allow to store new transactions separately in the original set.
      */
-    bool IsPeerNextToReconcileWith(NodeId peer_id, std::chrono::microseconds now);
+    void PrepareForExtensionRequest(uint16_t sketch_capacity);
 
     /**
-     * Adds a collection of transactions (identified by short_id) to m_recently_requested_short_ids.
-     * This should be called with the short_ids of the transaction being requested to a peer when sending
-     * out a RECONCILDIFF.
+     * To be efficient in transmitting extended sketch, we store a snapshot of the sketch
+     * received in the initial reconciliation step, so that only the necessary extension data
+     * has to be transmitted.
+     * We also store a snapshot of our local reconciliation set, to better keep track of
+     * transactions arriving during this reconciliation (they will be added to the cleared
+     * original reconciliation set, to be reconciled next time).
      */
-    void TrackRecentlyRequestedTransactions(std::vector<uint32_t>& requested_txs);
+    void PrepareForExtensionResponse(const std::vector<uint8_t>& remote_sketch);
 
     /**
-     * Checks whether a given transaction was requested by us to any of our Erlay outbound peers (during RECONCILDIFF).
+     * Get all the transactions we have stored for this peer, either from the local set
+     * or the snapshot, depending on the provided flag.
      */
-    bool WasTransactionRecentlyRequested(const Wtxid& wtxid);
+    std::vector<Wtxid> GetAllTransactions(bool from_snapshot) const;
 
     /**
-     * Step 2. Unless the peer hasn't finished a previous reconciliation round, this function will
-     * return the details of our local state, which should be communicated to the peer so that they
-     * better know what we need:
-     * - size of our reconciliation set for the peer
-     * - our q-coefficient with the peer, formatted to be transmitted as integer value
-     * Assumes the peer was previously registered for reconciliations.
+     * When during reconciliation we find a set difference successfully (by combining sketches),
+     * we want to find which transactions are missing on our and on their side.
+     * For those missing on our side, we may only find short IDs.
      */
-    std::optional<std::pair<uint16_t, uint16_t>> InitiateReconciliationRequest(NodeId peer_id);
+    void GetRelevantIDsFromShortIDs(const std::vector<uint64_t>& diff, bool from_snapshot,
+                                    // returning values
+                                    std::vector<uint32_t>& local_missing, std::vector<Wtxid>& remote_missing) const;
 
     /**
-     * Step 2. Record an reconciliation request with parameters to respond when its time.
-     * If peer violates the protocol, disconnect.
+     * After a reconciliation round passed, transactions missing by our peer are known by short ID.
+     * Look up their full wtxid locally to announce them to the peer.
      */
-    bool HandleReconciliationRequest(NodeId peer_id, uint16_t peer_recon_set_size, uint16_t peer_q);
+    std::vector<Wtxid> GetWtxidsFromShortIDs(const std::vector<uint32_t>& remote_missing_short_ids) const;
 
-    /**
-     * Step 2. Once it's time to respond to reconciliation requests, we construct a sketch from
-     * the local reconciliation set, and send it to the initiator.
-     * If the peer was not previously registered for reconciliations or the peers didn't request
-     * to reconcile with us, return false.
-     * For the initial reconciliation response (no extension phase), we only respond if the timer for
-     * this peer has ticked (send_trickle is true) to prevent announcing things too early.
-     */
-    bool ShouldRespondToReconciliationRequest(NodeId peer_id, std::vector<uint8_t>& skdata, bool send_trickle);
+private:
+    /** These values are used to salt short IDs, which is necessary for transaction reconciliations. */
+    uint64_t m_k0, m_k1;
 
-    /**
-     * Step 3. Process a response to our reconciliation request.
-     * Returns false if the peer seems to violate the protocol.
-     * Populates the vectors so that we know which transactions should be requested and announced,
-     * and whether reconciliation succeeded (nullopt if the reconciliation is not over yet and
-     * extension should be requested).
-     */
-    bool HandleSketch(NodeId peer_id, const std::vector<uint8_t>& skdata,
-                      // returning values
-                      std::vector<uint32_t>& txs_to_request, std::vector<Wtxid>& txs_to_announce, std::optional<bool>& result);
+    /** Clears the peer's local set. To be called once the reconciliation flow has completed. */
+    void ClearLocalSet()
+    {
+        m_local_set.clear();
+        m_short_id_mapping.clear();
+    }
 
-    /**
-     * Step 5. Peer requesting extension after reconciliation they initiated failed on their side:
-     * the sketch we sent to them was not sufficient to find the difference.
-     * No privacy leak can happen here because sketch extension is constructed over the snapshot.
-     * If the peer seems to violate the protocol, do nothing.
-     */
-    void HandleExtensionRequest(NodeId peer_id);
-
-    /**
-     * Step 4. Once we received a signal of reconciliation finalization with a given result from the
-     * initiating peer, announce the following transactions:
-     * - in case of a failure, all transactions we had for that peer
-     * - in case of a success, transactions the peer asked for by short id (ask_shortids)
-     * Return false if the peer seems to violate the protocol.
-     */
-    bool FinalizeInitByThem(NodeId peer_id, bool recon_result,
-        const std::vector<uint32_t>& remote_missing_short_ids, std::vector<Wtxid>& remote_missing);
-
-    /**
-     * Attempts to forget txreconciliation-related state of the peer (if we previously stored any).
-     * After this, we won't be able to reconcile transactions with the peer.
-     */
-    void ForgetPeer(NodeId peer_id);
-
-    /**
-     * Check if a peer is registered to reconcile transactions with us.
-     */
-    bool IsPeerRegistered(NodeId peer_id) const;
-
-    /**
-     * Whether a given peer is currently flagged for fanout.
-    */
-    bool IsInboundFanoutTarget(NodeId peer_id);
-
-    /**
-    * Get the threshold of fanout outbound peers
-    */
-    uint32_t GetOutboundFanoutThreshold();
-
-    /**
-     * Get the next time the inbound peer subset should be rotated.
-     */
-    std::chrono::microseconds GetNextInboundPeerRotationTime();
-
-    /**
-     * Update the next inbound peer rotation time.
-     */
-    void SetNextInboundPeerRotationTime(std::chrono::microseconds next_time);
-
-   /**
-    * Picks a different subset of inbound peers to fanout to.
-    */
-   void RotateInboundFanoutTargets();
+    /** Clears the snapshot of a peer's local set. To be called once the reconciliation flow has completed. */
+    void ClearLocalSetSnapshot()
+    {
+        m_local_set_snapshot.clear();
+        m_short_id_mapping_snapshot.clear(); // Not really needed, but better safe than sorry
+        m_announced_while_reconciling.clear();
+    }
 };
-
+} // namespace node
 #endif // BITCOIN_NODE_TXRECONCILIATION_H
