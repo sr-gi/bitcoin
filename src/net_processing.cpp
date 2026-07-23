@@ -719,11 +719,35 @@ private:
 
     void SendBlockTransactions(CNode& pfrom, Peer& peer, const CBlock& block, const BlockTransactionsRequest& req);
 
+    /**
+     * Test-only (-blackhole, INSECURE): message types a blackhole node never
+     * sends. Such a node receives and processes everything normally (so it keeps
+     * data and never re-downloads it) but forwards none of it: it offers no
+     * blocks or transactions. Requests (GETDATA/GETHEADERS/...) are still sent so
+     * it can download and stay connected. SHOULD NOT BE USED IN PRODUCTION.
+     */
+    static bool ShouldBeDropped(const std::string& msg_type)
+    {
+        return msg_type == NetMsgType::INV
+            || msg_type == NetMsgType::TX
+            || msg_type == NetMsgType::BLOCK
+            || msg_type == NetMsgType::CMPCTBLOCK
+            || msg_type == NetMsgType::BLOCKTXN
+            || msg_type == NetMsgType::MERKLEBLOCK
+            || msg_type == NetMsgType::HEADERS
+            || msg_type == NetMsgType::NOTFOUND;
+    }
+
     /** Send a message to a peer */
-    void PushMessage(CNode& node, CSerializedNetMsg&& msg) const { m_connman.PushMessage(&node, std::move(msg)); }
+    void PushMessage(CNode& node, CSerializedNetMsg&& msg) const
+    {
+        if (m_opts.blackhole && ShouldBeDropped(msg.m_type)) return;
+        m_connman.PushMessage(&node, std::move(msg));
+    }
     template <typename... Args>
     void MakeAndPushMessage(CNode& node, std::string msg_type, Args&&... args) const
     {
+        if (m_opts.blackhole && ShouldBeDropped(msg_type)) return;
         m_connman.PushMessage(&node, NetMsg::Make(std::move(msg_type), std::forward<Args>(args)...));
     }
     template <typename... Args>
@@ -2290,6 +2314,10 @@ void PeerManagerImpl::SendPings()
 
 void PeerManagerImpl::InitiateTxBroadcastToAll(const Txid& txid, const Wtxid& wtxid)
 {
+    // A blackhole forwards nothing, so never queue a transaction for announcement
+    // in the first place.
+    if (m_opts.blackhole) return;
+
     for (const PeerRef& peer_ref : GetAllPeers()) {
         if (!peer_ref) continue;
         Peer& peer{*peer_ref};

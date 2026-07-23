@@ -354,6 +354,8 @@ BASE_SCRIPTS = [
     'rpc_scanblocks.py',
     'tool_bitcoin.py',
     'p2p_sendtxrcncl.py',
+    'p2p_blackhole.py',
+    'p2p_blackhole_txrecon.py',
     'p2p_reqtxrcncl.py',
     'p2p_txrecon_disabled.py',
     'p2p_txrecon_initiator.py',

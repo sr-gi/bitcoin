@@ -95,6 +95,8 @@ public:
         uint32_t max_headers_result{MAX_HEADERS_RESULTS};
         //! Whether private broadcast is used for sending transactions.
         bool private_broadcast{DEFAULT_PRIVATE_BROADCAST};
+        //! Whether this node is a blackhole. Blackhole nodes do not forward any received data.
+        bool blackhole{false};
     };
 
     static std::unique_ptr<PeerManager> make(CConnman& connman, AddrMan& addrman,
